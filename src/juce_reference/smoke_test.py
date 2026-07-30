@@ -69,7 +69,7 @@ def _check_symbol(root: Path, symbol: str) -> dict[str, Any]:
             md_file = root / doc_path
             if not md_file.is_file():
                 return {
-                    "found": True,
+                    "found": False,  # ← FAIL when Markdown is missing
                     "error": f"Markdown file missing: {doc_path}",
                     "symbol": symbol,
                 }
@@ -77,6 +77,14 @@ def _check_symbol(root: Path, symbol: str) -> dict[str, Any]:
             content = md_file.read_text(encoding="utf-8", errors="replace")
             has_fm = content.startswith("---")
             has_heading = any(line.startswith("#") for line in content.splitlines())
+
+            # Enforce frontmatter + heading
+            if not has_fm or not has_heading:
+                return {
+                    "found": False,
+                    "error": f"Structural check failed: frontmatter={has_fm}, heading={has_heading}",
+                    "symbol": symbol,
+                }
 
             return {
                 "found": True,

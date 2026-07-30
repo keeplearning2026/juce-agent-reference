@@ -123,10 +123,8 @@ def _resolve_collisions(targets: dict[str, OutputTarget]) -> None:
             hash_tag = short_id(refid, 8)
             path = target.path
             # Insert hash before .md
-            if path.endswith(".md"):
-                new_path = path[:-3] + f"--{hash_tag}.md"
-            else:
-                new_path = f"{path}--{hash_tag}"
+            new_path = (path[:-3] + f"--{hash_tag}.md" if path.endswith(".md")
+                        else f"{path}--{hash_tag}")
             targets[refid] = OutputTarget(
                 refid=target.refid, path=new_path, anchor=target.anchor
             )

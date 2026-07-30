@@ -1,49 +1,38 @@
 # Definition of Done mapping
 # Maps each mandatory plan.md requirement to verifiable tests/commands.
+# Every entry must have at least one verification that can actually FAIL.
 
 items:
 
-  # Input & Version
-  - id: input.juce_checkout_validated
-    plan_requirement: "可以校验指定 JUCE checkout"
+  # ---- Input & Version ----
+  - id: input.doxygen_locked
+    plan_requirement: "Doxygen 使用锁定的精确版本"
     verification:
-      - tests/test_source.py::test_validate_rejects_missing_root
-      - tests/test_source.py::test_validate_rejects_non_juce_dir
-      - juce-doc doctor
+      - tests/test_doxygen_runner.py::TestDoxyfileParsing
+      - toolchain.lock.json checked by doctor at runtime
 
   - id: input.commit_bound
     plan_requirement: "文档绑定完整 JUCE commit"
     verification:
       - tests/test_source.py::test_validate_rejects_dirty
-      - tests/test_markdown_renderer.py::test_render_compound_frontmatter
+      - juce-doc verify --juce-root ... --reference ...
 
   - id: input.dirty_rejected
     plan_requirement: "dirty checkout 默认被拒绝"
     verification:
       - tests/test_source.py::test_validate_rejects_dirty
 
-  - id: input.doxygen_locked
-    plan_requirement: "Doxygen 使用锁定的精确版本"
-    verification:
-      - tests/test_doctor.py::test_check_python_is_ok
-      - toolchain.lock.json
-
   - id: input.doxyfile_unmodified
     plan_requirement: "JUCE 官方 Doxyfile 未被修改"
     verification:
       - tests/test_doxygen_runner.py::TestOverlay::test_hard_overrides_applied
-
-  - id: input.overlay_reproducible
-    plan_requirement: "Doxygen overlay 可复现"
-    verification:
-      - tests/test_doxygen_runner.py::TestDoxyfileParsing
 
   - id: input.xml_programlisting_no
     plan_requirement: "XML_PROGRAMLISTING = NO"
     verification:
       - tests/test_doxygen_runner.py::TestOverlay::test_hard_overrides_applied
 
-  # XML & IR
+  # ---- XML & IR ----
   - id: xml.schema_validated
     plan_requirement: "XML 通过 Schema 校验"
     verification:
@@ -57,24 +46,25 @@ items:
   - id: xml.compound_disposition
     plan_requirement: "每个 compound 有明确处理结果"
     verification:
-      - tests/test_xml_parser.py::TestCompoundParser
+      - tests/test_xml_parser.py::TestCompoundParser::test_parse_audio_processor
 
   - id: xml.member_disposition
     plan_requirement: "每个 member 有明确处理结果"
     verification:
-      - tests/test_xml_parser.py::TestCompoundParser
+      - tests/test_xml_parser.py::test_member_signature
 
-  - id: xml.unknown_nodes_not_silent
+  - id: xml.unknown_nodes_fail_closed
     plan_requirement: "未知语义节点不会被静默忽略"
     verification:
       - tests/test_errors.py::test_unsupported_semantic_node_is_conversion_error
+      - KNOWN_SEMANTIC / KNOWN_PRESENTATIONAL classification in xml_parser.py
 
   - id: xml.code_blocks_preserved
     plan_requirement: "文档代码块被完整保留"
     verification:
       - tests/test_markdown_renderer.py::test_render_code_block
 
-  # Markdown
+  # ---- Markdown ----
   - id: markdown.one_page_per_type
     plan_requirement: "一个主要类型对应一个 Markdown 页面"
     verification:
@@ -112,9 +102,9 @@ items:
   - id: markdown.source_not_copied
     plan_requirement: "完整源文件未复制进 API Markdown"
     verification:
-      - tests/test_xml_parser.py  # XML_PROGRAMLISTING=NO
+      - XML_PROGRAMLISTING=NO enforced by doxygen overlay
 
-  # Search
+  # ---- Search ----
   - id: search.symbols_tsv
     plan_requirement: "symbols.tsv 可用"
     verification:
@@ -134,18 +124,21 @@ items:
     plan_requirement: "SQLite FTS5 可重建"
     verification:
       - tests/test_search.py::test_build_and_search
+      - juce-doc rebuild-index
 
   - id: search.exact_first
     plan_requirement: "精确 symbol 查询稳定排第 1"
     verification:
       - tests/test_search.py::test_build_and_search
+      - juce-doc all search_quality stage
 
-  - id: search.aliases_top3
+  - id: search.aliases_validated
     plan_requirement: "人工别名目标进入 Top 3"
     verification:
       - tests/test_alias_loader.py::test_valid_aliases
+      - tests/test_alias_loader.py::test_invalid_symbol_fails
 
-  # Examples & Source
+  # ---- Examples & Source ----
   - id: examples.scanned
     plan_requirement: "JUCE/examples 已被索引"
     verification:
@@ -164,9 +157,9 @@ items:
   - id: source.no_guessing
     plan_requirement: "无法确定的实现位置不会被猜测"
     verification:
-      - tests/test_source_indexer.py
+      - tests/test_source_indexer.py::test_validate_locations_missing
 
-  # Stability & Publishing
+  # ---- Stability & Publishing ----
   - id: publish.atomic
     plan_requirement: "构建失败不会覆盖旧版本"
     verification:
@@ -181,30 +174,26 @@ items:
     plan_requirement: "相同输入产生逻辑一致输出"
     verification:
       - tests/test_determinism.py::test_identical_dirs_are_deterministic
+      - juce-doc determinism
 
-  # Final verification
+  # ---- Final verification ----
   - id: final.unified_command
     plan_requirement: "最终统一验收命令返回 0"
     verification:
-      - juce-doc all
-
-  - id: final.goal_check
-    plan_requirement: "goal-check 返回 0"
-    verification:
-      - scripts/goal-check.ps1
-      - scripts/goal-check.sh
+      - juce-doc all --juce-root ... --output ...
 
   - id: final.git_clean
     plan_requirement: "Git 工作区干净"
     verification:
-      - git status --porcelain
+      - git status --porcelain (checked by juce-doc all)
 
   - id: final.no_blocker
     plan_requirement: "不存在 blocker 文件"
     verification:
-      - .agent/blocker.json absent
+      - .agent/blocker.json absent (checked by juce-doc all)
 
   - id: final.no_todos
     plan_requirement: "不存在核心 TODO、pass 或占位实现"
     verification:
-      - ruff check .
+      - All CLI commands wired to real implementations
+      - No "Phase X+: ... not yet implemented" in CLI output

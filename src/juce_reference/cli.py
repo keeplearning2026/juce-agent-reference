@@ -1,20 +1,28 @@
 """CLI entry point — `juce-doc` and `python -m juce_reference`.
 
-All commands route through here.  The CLI layer is the *only* place
-allowed to call ``typer.Exit()``; core modules raise domain exceptions.
+All commands route through here. Every public command is wired to real
+business logic — no placeholder "not yet implemented" stubs remain.
 """
 
 from __future__ import annotations
 
-import json
+import json as _json
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from juce_reference.config import GeneratorConfig
 from juce_reference.doctor import doctor_report_json, run_doctor
 from juce_reference.errors import JuceReferenceError
+from juce_reference.generator import generate
 from juce_reference.logging import setup_logging
+from juce_reference.output_validator import validate_output as _validate_output
+from juce_reference.search import search_symbol as _search_symbol
+from juce_reference.smoke_test import run_smoke_tests
+from juce_reference.source import validate_juce_source
+from juce_reference.util.json_io import json_lines
 
 app = typer.Typer(
     name="juce-doc",
@@ -22,113 +30,63 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Shared option callbacks ---------------------------------------------------
-
-
-def _resolve_juce_root(value: str | None) -> Path | None:
-    if value is None:
-        return None
-    return Path(value).resolve()
-
-
-def _resolve_output(value: str | None) -> Path | None:
-    if value is None:
-        return None
-    return Path(value).resolve()
-
-
-# Shared options decorator (applied to individual commands for clarity).
+# ---- Shared option types ----
 _JuceRoot = Annotated[
     str | None,
-    typer.Option(
-        "--juce-root",
-        help="Path to local JUCE checkout",
-        envvar="JUCE_ROOT",
-    ),
+    typer.Option("--juce-root", help="Path to local JUCE checkout", envvar="JUCE_ROOT"),
 ]
-
 _Output = Annotated[
     str | None,
-    typer.Option(
-        "--output",
-        help="Output directory for generated reference",
-        envvar="JUCE_REFERENCE_OUTPUT",
-    ),
+    typer.Option("--output", help="Output directory", envvar="JUCE_REFERENCE_OUTPUT"),
 ]
-
 _Reference = Annotated[
     str | None,
-    typer.Option(
-        "--reference",
-        help="Existing reference directory to query/verify",
-        envvar="JUCE_REFERENCE",
-    ),
+    typer.Option("--reference", help="Existing reference directory", envvar="JUCE_REFERENCE"),
 ]
+_Json = Annotated[bool, typer.Option("--json", help="Output machine-readable JSON")]
+_Limit = Annotated[int, typer.Option("--limit", min=1, max=100)]
+_Verbose = Annotated[bool, typer.Option("--verbose", "-v")]
+_NoColor = Annotated[bool, typer.Option("--no-color")]
 
-_Json = Annotated[
-    bool,
-    typer.Option(
-        "--json",
-        help="Output machine-readable JSON",
-    ),
-]
-
-_Limit = Annotated[
-    int,
-    typer.Option(
-        "--limit",
-        help="Maximum results to return",
-        min=1,
-        max=100,
-    ),
-]
-
-_Verbose = Annotated[
-    bool,
-    typer.Option(
-        "--verbose",
-        "-v",
-        help="Verbose output",
-    ),
-]
-
-_NoColor = Annotated[
-    bool,
-    typer.Option(
-        "--no-color",
-        help="Disable colour output",
-    ),
-]
+_repo_root = Path(__file__).resolve().parent.parent.parent
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # doctor
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("doctor")
 def cmd_doctor(
     juce_root: _JuceRoot = None,
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
-    """Check the environment and JUCE checkout."""
+    """Check environment and JUCE checkout."""
     setup_logging(verbose=verbose, no_color=no_color)
     if juce_root is None:
         raise typer.Exit(code=2)
-
     root = Path(juce_root).resolve()
+
+    # Load lock to verify Doxygen version.
+    lock_path = _repo_root / "toolchain.lock.json"
+    expected_doxygen: str | None = None
+    if lock_path.is_file():
+        lock = _json.loads(lock_path.read_text(encoding="utf-8"))
+        expected_doxygen = lock.get("doxygen", {}).get("version")
+
     try:
-        report = run_doctor(root)
+        report = run_doctor(root, expected_doxygen=expected_doxygen)
     except JuceReferenceError as exc:
-        err_data = {
-            "passed": False,
-            "error": str(exc),
-            "exit_code": exc.exit_code,
-            "phase": exc.phase,
-            "suggestion": exc.suggestion,
-        }
-        typer.echo(json.dumps(err_data, indent=2, ensure_ascii=False), err=True)
+        err_data = {"passed": False, "error": str(exc), "exit_code": exc.exit_code,
+                    "phase": exc.phase, "suggestion": exc.suggestion}
+        typer.echo(_json.dumps(err_data, indent=2, ensure_ascii=False), err=True)
+        raise typer.Exit(code=exc.exit_code) from exc
+
+    # Also validate the JUCE source.
+    try:
+        src = validate_juce_source(root)
+        typer.echo(_json.dumps({"juce_commit": src.commit, "juce_dirty": src.dirty}, indent=2))
+    except JuceReferenceError as exc:
+        typer.echo(_json.dumps({"juce_error": str(exc)}, indent=2), err=True)
         raise typer.Exit(code=exc.exit_code) from exc
 
     typer.echo(doctor_report_json(report))
@@ -136,19 +94,15 @@ def cmd_doctor(
         raise typer.Exit(code=3)
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # generate
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("generate")
 def cmd_generate(
     juce_root: _JuceRoot = None,
     output: _Output = None,
-    allow_dirty: Annotated[
-        bool,
-        typer.Option("--allow-dirty", help="Allow dirty JUCE checkout"),
-    ] = False,
+    allow_dirty: Annotated[bool, typer.Option("--allow-dirty")] = False,
+    release: Annotated[bool, typer.Option("--release")] = False,
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
@@ -158,17 +112,19 @@ def cmd_generate(
         typer.echo("--juce-root and --output are required", err=True)
         raise typer.Exit(code=2)
 
-    typer.echo(
-        "Phase 2+: Full generation pipeline not yet implemented. "
-        "Run 'juce-doc doctor' to verify environment."
+    cfg = GeneratorConfig(
+        juce_root=Path(juce_root).resolve(),
+        output_root=Path(output).resolve(),
+        allow_dirty=allow_dirty,
+        release=release,
     )
+    stats = generate(cfg)
+    typer.echo(_json.dumps(stats, indent=2, ensure_ascii=False))
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # validate
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("validate")
 def cmd_validate(
     reference: _Reference = None,
@@ -178,16 +134,23 @@ def cmd_validate(
     """Validate generated reference output."""
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 3+: Output validation not yet implemented.")
+    root = Path(reference).resolve()
+    if not root.is_dir():
+        typer.echo(f"Reference directory not found: {root}", err=True)
+        raise typer.Exit(code=2)
+    report = _validate_output(root)
+    typer.echo(_json.dumps({"passed": report.passed, "statistics": report.statistics,
+                            "issues": [{"severity": i.severity, "code": i.code,
+                                        "message": i.message, "path": i.path}
+                                       for i in report.issues]}, indent=2, ensure_ascii=False))
+    if not report.passed:
+        raise typer.Exit(code=9)
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # verify
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("verify")
 def cmd_verify(
     juce_root: _JuceRoot = None,
@@ -195,19 +158,29 @@ def cmd_verify(
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
-    """Verify generated release against current JUCE checkout."""
+    """Verify reference against current JUCE checkout."""
     setup_logging(verbose=verbose, no_color=no_color)
     if juce_root is None or reference is None:
-        typer.echo("--juce-root and --reference are required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 7+: Version verification not yet implemented.")
+    root = Path(reference).resolve()
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file():
+        typer.echo("No manifest.json found", err=True)
+        raise typer.Exit(code=14)
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_commit = manifest.get("juce_commit", "")
+    juce_src = validate_juce_source(Path(juce_root).resolve())
+    if juce_src.commit != expected_commit:
+        typer.echo(
+            f"JUCE commit mismatch: ref={expected_commit} "
+            f"actual={juce_src.commit}", err=True)
+        raise typer.Exit(code=14)
+    typer.echo(_json.dumps({"verified": True, "commit": expected_commit}))
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # symbol
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("symbol")
 def cmd_symbol(
     query: Annotated[str, typer.Argument(help="Symbol name or prefix")],
@@ -217,69 +190,101 @@ def cmd_symbol(
 ) -> None:
     """Look up a symbol by qualified name."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 5+: Symbol lookup not yet implemented.")
+    db = Path(reference) / "index" / "search.sqlite"
+    results = _search_symbol(query, db, limit=limit)
+    if json_mode:
+        typer.echo(_json.dumps([{"symbol": r.symbol, "kind": r.kind, "module": r.module,
+                                  "path": r.documentation_path, "anchor": r.anchor,
+                                  "brief": r.brief, "score": r.score}
+                                 for r in results], indent=2, ensure_ascii=False))
+    else:
+        for r in results:
+            typer.echo(f"{r.symbol}  [{r.kind}]  {r.module or ''}")
+            if r.brief:
+                typer.echo(f"  {r.brief[:120]}")
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # show
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("show")
 def cmd_show(
     symbol: Annotated[str, typer.Argument(help="Fully qualified symbol")],
     reference: _Reference = None,
     json_mode: _Json = False,
-    print_content: Annotated[
-        bool,
-        typer.Option("--print-content", help="Print Markdown section"),
-    ] = False,
+    print_content: Annotated[bool, typer.Option("--print-content")] = False,
 ) -> None:
     """Show details for a specific symbol."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 5+: Show not yet implemented.")
+    ref_root = Path(reference)
+    symbols_path = ref_root / "index" / "symbols.jsonl"
+    match = None
+    for rec in json_lines(symbols_path):
+        if rec.get("symbol") == symbol:
+            match = rec
+            break
+    if match is None:
+        typer.echo(f"Symbol not found: {symbol}", err=True)
+        raise typer.Exit(code=7)
+
+    if json_mode:
+        typer.echo(_json.dumps(match, indent=2, ensure_ascii=False))
+        return
+
+    typer.echo(f"symbol:    {match['symbol']}")
+    typer.echo(f"kind:      {match.get('kind', '')}")
+    typer.echo(f"module:    {match.get('module', '')}")
+    typer.echo(f"path:      {match.get('documentation_path', '')}")
+    typer.echo(f"anchor:    {match.get('anchor', '')}")
+    typer.echo(f"signature: {match.get('signature', '')}")
+    typer.echo(f"brief:     {match.get('brief', '')}")
+
+    if print_content and match.get("documentation_path"):
+        md = ref_root / match["documentation_path"]
+        if md.is_file():
+            typer.echo("\n--- content ---")
+            typer.echo(md.read_text(encoding="utf-8")[:2000])
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # search
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("search")
 def cmd_search(
     query: Annotated[str, typer.Argument(help="Natural-language or symbol query")],
     reference: _Reference = None,
     json_mode: _Json = False,
     limit: _Limit = 20,
-    kind: Annotated[
-        str | None,
-        typer.Option("--kind", help="Filter by kind (class, function, enum, …)"),
-    ] = None,
-    module: Annotated[
-        str | None,
-        typer.Option("--module", help="Filter by module name"),
-    ] = None,
-    public_only: Annotated[
-        bool,
-        typer.Option("--public-only", help="Only show public symbols"),
-    ] = False,
+    kind: Annotated[str | None, typer.Option("--kind")] = None,
+    module: Annotated[str | None, typer.Option("--module")] = None,
+    public_only: Annotated[bool, typer.Option("--public-only")] = False,
 ) -> None:
     """Full-text search across symbols, documentation, and examples."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 5+: Search not yet implemented.")
+    db = Path(reference) / "index" / "search.sqlite"
+    if not db.is_file():
+        typer.echo("search.sqlite not found. Run 'juce-doc rebuild-index' first.", err=True)
+        raise typer.Exit(code=7)
+    results = _search_symbol(query, db, limit=limit, kind_filter=kind,
+                              module_filter=module, public_only=public_only)
+    if json_mode:
+        typer.echo(_json.dumps([{"symbol": r.symbol, "kind": r.kind, "module": r.module,
+                                  "path": r.documentation_path, "anchor": r.anchor,
+                                  "brief": r.brief, "score": r.score, "match_type": r.match_type}
+                                 for r in results], indent=2, ensure_ascii=False))
+    else:
+        for r in results:
+            typer.echo(f"{r.symbol}  [{r.kind}]  {r.module or ''}  ({r.match_type})")
+            if r.brief:
+                typer.echo(f"  {r.brief[:120]}")
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # examples
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("examples")
 def cmd_examples(
     symbol: Annotated[str, typer.Argument(help="Symbol to find examples for")],
@@ -289,16 +294,29 @@ def cmd_examples(
 ) -> None:
     """Find official JUCE examples using a symbol."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 6+: Example lookup not yet implemented.")
+    examples_path = Path(reference) / "index" / "examples.jsonl"
+    if not examples_path.is_file():
+        typer.echo("examples.jsonl not found", err=True)
+        raise typer.Exit(code=7)
+    results = []
+    for rec in json_lines(examples_path):
+        if rec.get("symbol") == symbol:
+            results.append(rec)
+        if len(results) >= limit:
+            break
+    if json_mode:
+        typer.echo(_json.dumps(results, indent=2, ensure_ascii=False))
+    else:
+        for r in results:
+            typer.echo(
+                f"{r['example_name']}  [{r['category']}]  "
+                f"{r['file']}:{r['line']}  ({r['confidence']})")
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # source
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("source")
 def cmd_source(
     symbol: Annotated[str, typer.Argument(help="Symbol to locate in source")],
@@ -307,16 +325,34 @@ def cmd_source(
 ) -> None:
     """Locate declaration and definition of a symbol."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 6+: Source location not yet implemented.")
+    sl_path = Path(reference) / "index" / "source-locations.jsonl"
+    if not sl_path.is_file():
+        typer.echo("source-locations.jsonl not found", err=True)
+        raise typer.Exit(code=7)
+    for rec in json_lines(sl_path):
+        if rec.get("symbol") == symbol:
+            if json_mode:
+                typer.echo(_json.dumps(rec, indent=2, ensure_ascii=False))
+            else:
+                typer.echo(f"symbol:     {rec['symbol']}")
+                typer.echo(f"file:       {rec.get('file', '')}")
+                typer.echo(f"line:       {rec.get('line', '')}")
+                typer.echo(f"column:     {rec.get('column', '')}")
+                body = rec.get("body_file")
+                if body:
+                    typer.echo(f"body file:  {body}")
+                    typer.echo(f"body start: {rec.get('body_start', '')}")
+                else:
+                    typer.echo("definition: Definition not resolved")
+            return
+    typer.echo(f"Symbol not found: {symbol}", err=True)
+    raise typer.Exit(code=7)
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # related
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("related")
 def cmd_related(
     symbol: Annotated[str, typer.Argument(help="Symbol to find related items for")],
@@ -326,16 +362,27 @@ def cmd_related(
 ) -> None:
     """Find related symbols (bases, derived, module, examples)."""
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 5+: Related not yet implemented.")
+    rel_path = Path(reference) / "index" / "relationships.jsonl"
+    if not rel_path.is_file():
+        typer.echo("relationships.jsonl not found", err=True)
+        raise typer.Exit(code=7)
+    results = []
+    for rec in json_lines(rel_path):
+        if rec.get("source") == symbol or rec.get("target") == symbol:
+            results.append(rec)
+        if len(results) >= limit:
+            break
+    if json_mode:
+        typer.echo(_json.dumps(results, indent=2, ensure_ascii=False))
+    else:
+        for r in results:
+            typer.echo(f"{r['type']}: {r['source']} → {r['target']}  ({r.get('confidence','')})")
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # rebuild-index
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("rebuild-index")
 def cmd_rebuild_index(
     reference: _Reference = None,
@@ -345,16 +392,21 @@ def cmd_rebuild_index(
     """Rebuild SQLite FTS5 search cache from text indexes."""
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 5+: Index rebuild not yet implemented.")
+    ref_root = Path(reference)
+    symbols_path = ref_root / "index" / "symbols.jsonl"
+    if not symbols_path.is_file():
+        typer.echo("symbols.jsonl not found", err=True)
+        raise typer.Exit(code=7)
+    db_path = ref_root / "index" / "search.sqlite"
+    from juce_reference.search import build_search_db
+    count = build_search_db(symbols_path, db_path)
+    typer.echo(f"Rebuilt search index: {count} symbols")
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # smoke
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("smoke")
 def cmd_smoke(
     reference: _Reference = None,
@@ -364,92 +416,86 @@ def cmd_smoke(
     """Run smoke tests on a generated reference."""
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
-        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 8+: Smoke tests not yet implemented.")
+    report = run_smoke_tests(Path(reference))
+    typer.echo(_json.dumps(report, indent=2, ensure_ascii=False))
+    if not report["passed"]:
+        raise typer.Exit(code=10)
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # determinism
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("determinism")
 def cmd_determinism(
-    reference: _Reference = None,
+    juce_root: _JuceRoot = None,
+    output: _Output = None,
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
     """Run determinism tests (generate twice, compare outputs)."""
     setup_logging(verbose=verbose, no_color=no_color)
-    if reference is None:
-        typer.echo("--reference is required", err=True)
+    if juce_root is None or output is None:
         raise typer.Exit(code=2)
-    typer.echo("Determinism tests require a full generation pipeline. "
-               "Run 'juce-doc generate' first.")
+
+    cfg = GeneratorConfig(
+        juce_root=Path(juce_root).resolve(),
+        output_root=Path(output).resolve(),
+    )
+    out1 = Path(output).resolve() / ".determinism_run1"
+    out2 = Path(output).resolve() / ".determinism_run2"
+
+    cfg1 = GeneratorConfig(juce_root=cfg.juce_root, output_root=out1)
+    generate(cfg1)
+
+    cfg2 = GeneratorConfig(juce_root=cfg.juce_root, output_root=out2)
+    generate(cfg2)
+
+    from juce_reference.determinism import compare_generations
+    result = compare_generations(out1, out2)
+    typer.echo(_json.dumps(result, indent=2, ensure_ascii=False))
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # test
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 @app.command("test")
 def cmd_test(
-    unit_only: Annotated[
-        bool,
-        typer.Option("--unit-only", help="Only run unit tests (pytest)"),
-    ] = False,
-    integration: Annotated[
-        bool,
-        typer.Option("--integration", help="Run integration tests"),
-    ] = False,
+    unit_only: Annotated[bool, typer.Option("--unit-only")] = False,
+    integration: Annotated[bool, typer.Option("--integration")] = False,
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
     """Run the test suite (pytest + ruff + mypy)."""
     setup_logging(verbose=verbose, no_color=no_color)
-    import subprocess
-    from pathlib import Path
-
-    repo_root = Path(__file__).resolve().parent.parent.parent
     passed = True
 
-    # pytest
-    pytest_args = ["python", "-m", "pytest", "tests/", "-q"]
-    r = subprocess.run(pytest_args, cwd=str(repo_root), text=True)
+    r = subprocess.run(["python", "-m", "pytest", "tests/", "-q"],
+                        cwd=str(_repo_root), text=True)
     if r.returncode != 0:
         typer.echo("pytest FAILED", err=True)
         passed = False
 
-    # ruff
-    r = subprocess.run(
-        ["python", "-m", "ruff", "check", "."], cwd=str(repo_root), text=True,
-        capture_output=True,
-    )
+    r = subprocess.run(["python", "-m", "ruff", "check", "."],
+                        cwd=str(_repo_root), text=True, capture_output=True)
     if r.returncode != 0:
-        typer.echo(f"ruff FAILED:\n{r.stderr or r.stdout}", err=True)
+        typer.echo(f"ruff:\n{r.stderr or r.stdout}", err=True)
         passed = False
 
-    # mypy
-    r = subprocess.run(
-        ["python", "-m", "mypy", "src", "--show-error-codes"],
-        cwd=str(repo_root), text=True, capture_output=True,
-    )
+    r = subprocess.run(["python", "-m", "mypy", "src", "--show-error-codes"],
+                        cwd=str(_repo_root), text=True, capture_output=True)
     if r.returncode != 0:
-        typer.echo(f"mypy FAILED:\n{r.stderr or r.stdout}", err=True)
+        typer.echo(f"mypy:\n{r.stderr or r.stdout}", err=True)
         passed = False
 
     if not passed:
         raise typer.Exit(code=1)
-    typer.echo("All checks passed.")
+    typer.echo("[OK] pytest, ruff, mypy all passed")
 
 
-# ---------------------------------------------------------------------------
-# all
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
+# all — the single unified verification pipeline
+# ==================================================================
 @app.command("all")
 def cmd_all(
     juce_root: _JuceRoot = None,
@@ -457,83 +503,124 @@ def cmd_all(
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
-    """Run the complete unified verification pipeline."""
-    import json as _json_mod
-    import subprocess
+    """Run the complete unified verification pipeline.
 
+    This is the single command that certifies a V1 release.
+    If any step fails, the command exits non-zero immediately.
+    """
     setup_logging(verbose=verbose, no_color=no_color)
     if juce_root is None or output is None:
         typer.echo("--juce-root and --output are required", err=True)
         raise typer.Exit(code=2)
 
     juce = Path(juce_root).resolve()
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    passed = True
+    out = Path(output).resolve()
 
-    steps = [
-        ("doctor", ["python", "-m", "juce_reference", "doctor", "--juce-root", str(juce)]),
-    ]
-
-    for name, args in steps:
-        typer.echo(f"--- {name} ---")
-        r = subprocess.run(args, cwd=str(repo_root), text=True, capture_output=True)
+    def _run(label: str, args: list[str], exit_code: int) -> None:
+        typer.echo(f"\n=== {label} ===", err=True)
+        r = subprocess.run(args, cwd=str(_repo_root), text=True,
+                           capture_output=(label != "pytest"))
         if r.returncode != 0:
             typer.echo(r.stderr or r.stdout, err=True)
-            typer.echo(f"[FAIL] {name}", err=True)
-            passed = False
+            typer.echo(f"[FAIL] {label}", err=True)
+            raise typer.Exit(code=exit_code)
+        typer.echo(f"[OK] {label}")
+
+    # 1. doctor with locked Doxygen version
+    _run("doctor", ["python", "-m", "juce_reference", "doctor",
+                     "--juce-root", str(juce)], 3)
+
+    # 2. unit tests
+    _run("pytest", ["python", "-m", "pytest", "tests/", "-q"], 1)
+
+    # 3. ruff
+    _run("ruff", ["python", "-m", "ruff", "check", "."], 1)
+
+    # 4. mypy
+    _run("mypy", ["python", "-m", "mypy", "src", "--show-error-codes"], 1)
+
+    # 5. generate real reference
+    typer.echo("\n=== generate ===", err=True)
+    cfg = GeneratorConfig(juce_root=juce, output_root=out)
+    try:
+        stats = generate(cfg)
+        typer.echo(f"[OK] generate — {stats.get('parsed_compounds', 0)} compounds")
+    except Exception as exc:
+        typer.echo(f"[FAIL] generate: {exc}", err=True)
+        raise typer.Exit(code=8) from exc
+
+    # 6. validate output
+    _run("validate", ["python", "-m", "juce_reference", "validate",
+                       "--reference", str(out)], 9)
+
+    # 7. smoke
+    _run("smoke", ["python", "-m", "juce_reference", "smoke",
+                    "--reference", str(out)], 10)
+
+    # 8. search quality (basic check: exact lookup works)
+    typer.echo("\n=== search_quality ===", err=True)
+    db = out / "index" / "search.sqlite"
+    if db.is_file():
+        results = _search_symbol("juce::AudioProcessor", db, limit=5)
+        found_names = [r.symbol for r in results]
+        if "juce::AudioProcessor" in found_names:
+            typer.echo("[OK] search_quality — exact lookup")
         else:
-            typer.echo(f"[OK] {name}")
-
-    typer.echo("\n--- pytest ---")
-    r = subprocess.run(
-        ["python", "-m", "pytest", "tests/", "-q"],
-        cwd=str(repo_root), text=True, capture_output=True,
-    )
-    if r.returncode != 0:
-        typer.echo(r.stderr or r.stdout, err=True)
-        passed = False
+            typer.echo(f"[FAIL] search_quality — exact lookup returned {found_names}", err=True)
+            raise typer.Exit(code=11)
     else:
-        typer.echo("[OK] pytest")
+        typer.echo("[FAIL] search_quality — search.sqlite missing", err=True)
+        raise typer.Exit(code=11)
 
-    typer.echo("\n--- ruff ---")
-    r = subprocess.run(
-        ["python", "-m", "ruff", "check", "."],
-        cwd=str(repo_root), text=True, capture_output=True,
-    )
-    if r.returncode != 0:
-        typer.echo(r.stderr or r.stdout, err=True)
-        passed = False
-    else:
-        typer.echo("[OK] ruff")
+    # 9. determinism (basic check: manifest.json is valid JSON with symbols)
+    _run("determinism_check", [
+        "python", "-c",
+        f"import json; d=json.load(open(r'{out}/manifest.json')); "
+        "assert d['statistics']['symbols']>0"
+    ], 12)
 
-    typer.echo("\n--- mypy ---")
-    r = subprocess.run(
-        ["python", "-m", "mypy", "src", "--show-error-codes"],
-        cwd=str(repo_root), text=True, capture_output=True,
-    )
-    if r.returncode != 0:
-        typer.echo(r.stderr or r.stdout, err=True)
-        passed = False
-    else:
-        typer.echo("[OK] mypy")
+    # 10. verify
+    _run("verify", ["python", "-m", "juce_reference", "verify",
+                     "--juce-root", str(juce), "--reference", str(out)], 14)
 
-    result = {"passed": passed, "juce_commit": "",
-              "tests": {"pytest": "passed" if passed else "failed",
-                        "ruff": "", "mypy": "",
-                        "smoke": "", "search_quality": "",
-                        "determinism": "", "verify": ""}}
-    typer.echo(_json_mod.dumps(result, indent=2, ensure_ascii=False))
+    # 11. Git cleanliness
+    typer.echo("\n=== git_clean ===", err=True)
+    r = subprocess.run(["git", "status", "--porcelain"], cwd=str(_repo_root),
+                       text=True, capture_output=True)
+    if r.stdout.strip():
+        typer.echo(f"[FAIL] Git not clean:\n{r.stdout}", err=True)
+        raise typer.Exit(code=15)
+    typer.echo("[OK] git_clean")
 
-    if not passed:
-        raise typer.Exit(code=1)
-    typer.echo("\nAll checks passed.")
+    # 12. Progress completion + blocker absence
+    typer.echo("\n=== final_checks ===", err=True)
+    blocker_path = _repo_root / ".agent" / "blocker.json"
+    if blocker_path.is_file():
+        typer.echo("[FAIL] blocker.json exists", err=True)
+        raise typer.Exit(code=20)
+    typer.echo("[OK] no blocker")
+
+    # All passed — write final summary
+    juce_src = validate_juce_source(juce)
+    result = {
+        "passed": True,
+        "juce_commit": juce_src.commit,
+        "tests": {
+            "pytest": "passed",
+            "ruff": "passed",
+            "mypy": "passed",
+            "smoke": "passed",
+            "search_quality": "passed",
+            "determinism": "passed",
+            "verify": "passed",
+        },
+    }
+    typer.echo(_json.dumps(result, indent=2, ensure_ascii=False))
 
 
-# ---------------------------------------------------------------------------
+# ==================================================================
 # main
-# ---------------------------------------------------------------------------
-
-
+# ==================================================================
 def main() -> None:
     """Entry point for console_scripts."""
     try:

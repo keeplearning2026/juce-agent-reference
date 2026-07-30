@@ -48,12 +48,10 @@ def _fix_relative_links(
             # Outside JUCE root; keep as-is.
             return m.group(0)
 
-        if rel.suffix == ".md":
-            # Route to guides/
-            new_url = f"./{output_dir_prefix}{rel.as_posix()}"
-        else:
-            # Keep as relative to JUCE root.
-            new_url = f"../juce/{rel.as_posix()}"
+        new_url = (
+            f"./{output_dir_prefix}{rel.as_posix()}" if rel.suffix == ".md"
+            else f"../juce/{rel.as_posix()}"
+        )
 
         return f"[{text}]({new_url})"
 

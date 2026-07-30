@@ -51,13 +51,18 @@ def build_search_db(
     conn = sqlite3.connect(str(output_path))
     conn.execute("PRAGMA journal_mode=WAL")
 
+    # Drop existing tables for clean rebuild.
+    conn.execute("DROP TABLE IF EXISTS symbol_fts")
+    conn.execute("DROP TABLE IF EXISTS symbols")
+
     # Regular table
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS symbols (
+        CREATE TABLE symbols (
             id INTEGER PRIMARY KEY,
             symbol TEXT NOT NULL,
             short_name TEXT NOT NULL,
             kind TEXT,
+            access TEXT,
             module TEXT,
             documentation_path TEXT,
             anchor TEXT,
@@ -67,9 +72,9 @@ def build_search_db(
         )
     """)
 
-    # FTS table (standalone content)
+    # FTS table
     conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
+        CREATE VIRTUAL TABLE symbol_fts USING fts5(
             symbol, short_name, aliases, concepts, kind, module,
             signature, brief, documentation_path, anchor
         )
@@ -88,11 +93,12 @@ def build_search_db(
         all_concepts = " ".join(concepts)
 
         conn.execute(
-            "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 idx + 1, symbol, short_name, sym.get("kind"),
-                sym.get("module"), sym.get("documentation_path"),
-                sym.get("anchor"), sym.get("signature"),
+                sym.get("access", ""), sym.get("module"),
+                sym.get("documentation_path"), sym.get("anchor"),
+                sym.get("signature"),
                 1 if sym.get("documented") else 0, sym.get("brief"),
             ),
         )

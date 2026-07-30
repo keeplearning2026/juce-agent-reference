@@ -156,35 +156,74 @@ def _validate_indexes(root: Path) -> list[ValidationIssue]:
 
 
 def _validate_links(root: Path) -> list[ValidationIssue]:
-    """Check internal Markdown links."""
+    """Check all internal Markdown links resolve to existing files/anchors."""
     issues: list[ValidationIssue] = []
+    # Build an anchor index per file.
+    anchor_index: dict[str, set[str]] = {}
+    for md_file in root.rglob("*.md"):
+        rel = md_file.relative_to(root).as_posix()
+        content = md_file.read_text(encoding="utf-8", errors="replace")
+        anchor_index[rel] = set()
+        # Collect explicit <a id="..."> anchors
+        import re
+        for m in re.finditer(r'<a\s+id="([^"]+)"', content):
+            anchor_index[rel].add(m.group(1))
+        # Collect headings as implicit anchors
+        for m in re.finditer(r'^#{1,6}\s+(.+)$', content, re.MULTILINE):
+            slug = re.sub(r'[^a-z0-9-]', '', m.group(1).strip().lower().replace(' ', '-'))
+            anchor_index[rel].add(slug)
 
     for md_file in root.rglob("*.md"):
         rel = md_file.relative_to(root).as_posix()
         content = md_file.read_text(encoding="utf-8", errors="replace")
 
         for _text, link in internal_links(content):
-            if link.startswith("./"):
-                target = (md_file.parent / link).resolve()
-                try:
-                    target.resolve().relative_to(root)
-                    if not target.is_file():
-                        issues.append(ValidationIssue(
-                            severity="error",
-                            code="broken-internal-link",
-                            message=f"Broken link to {link} from {rel}",
-                            path=rel,
-                        ))
-                except ValueError:
-                    # Link is outside reference root
-                    pass
+            # Unresolved references always fail.
+            if "unresolved:" in link:
+                issues.append(ValidationIssue(
+                    severity="error", code="unresolved-reference",
+                    message=f"Unresolved reference: {link}", path=rel))
+                continue
+
+            if any(link.startswith(p) for p in ("http://", "https://", "mailto:")):
+                continue
+            anchor_part: str | None = None
+            if "#" in link:
+                file_part, anchor_part = link.rsplit("#", 1)
+            else:
+                file_part = link
+
+            if not file_part:
+                # Pure anchor (e.g. "#member") — check current file
+                if anchor_part and anchor_part not in anchor_index.get(rel, set()):
+                    issues.append(ValidationIssue(
+                        severity="error", code="broken-anchor",
+                        message=f"Anchor #{anchor_part} not found in {rel}", path=rel))
+                continue
+
+            # Resolve file path relative to the source file's directory
+            target = (md_file.parent / file_part).resolve()
+            try:
+                target_rel = target.relative_to(root).as_posix()
+            except ValueError:
+                continue  # Link outside reference root
+
+            if not target.is_file():
+                issues.append(ValidationIssue(
+                    severity="error", code="broken-internal-link",
+                    message=f"Broken link to {file_part} from {rel}", path=rel))
+                continue
+
+            # If there's an anchor, verify it exists in the target file
+            if anchor_part and target_rel in anchor_index and anchor_part not in anchor_index[target_rel]:
+                issues.append(ValidationIssue(
+                        severity="error", code="broken-anchor",
+                        message=f"Anchor #{anchor_part} not found in {target_rel} (from {rel})",
+                        path=rel))
 
             if "unresolved:" in link:
                 issues.append(ValidationIssue(
-                    severity="error",
-                    code="unresolved-reference",
-                    message=f"Unresolved reference: {link}",
-                    path=rel,
-                ))
+                    severity="error", code="unresolved-reference",
+                    message=f"Unresolved reference: {link}", path=rel))
 
     return issues

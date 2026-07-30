@@ -54,9 +54,9 @@ def test_build_and_search(tmp_path: Path) -> None:
     assert len(results) >= 1
     assert results[0].symbol == "juce::AudioProcessorValueTreeState"
 
-    # FTS search
+    # FTS search — title contains "Manages plugin parameter state"
     results = search_symbol("plugin parameter state", db)
-    assert len(results) >= 0  # May return results if FTS matches
+    assert len(results) >= 1, "FTS should find at least one result for brief text"
 
 
 def test_search_result_dataclass() -> None:
