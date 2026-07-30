@@ -193,7 +193,10 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         _json.dumps(fmt_warnings, indent=2, ensure_ascii=False), encoding="utf-8")
     stats["formatting_warnings"] = len(fmt_warnings)
 
-    # ---- 15. Validate output ----
+    # ---- 15. Write generation report first (required by validator) ----
+    _write_generation_report(reports_dir, stats)
+
+    # ---- 16. Validate output ----
     validation = validate_output(candidate_dir)
     stats["output_validation"] = {
         "passed": validation.passed,
@@ -229,13 +232,17 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     stats["published"] = publish_result.published
     stats["candidate_path"] = str(candidate_dir)
     stats["published_path"] = str(publish_result.release_path)
-    # Exclude non-deterministic data from generation.json
+
+    return stats
+
+
+# ---- report helper ----
+
+def _write_generation_report(reports_dir: Path, stats: dict[str, Any]) -> None:
     _nondeterministic = {"started_at_iso", "config"}
     det_stats = {k: v for k, v in stats.items() if k not in _nondeterministic}
     (reports_dir / "generation.json").write_text(
         _json.dumps(det_stats, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    return stats
 
 
 # ---- docs.lock.json builder ----
