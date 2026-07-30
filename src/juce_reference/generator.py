@@ -1,19 +1,30 @@
 """Generation orchestrator — the full pipeline from JUCE checkout to output.
 
-This is the single entry point that wires together:
-    source validation → Doxygen → XML validation → parsing →
-    path mapping → rendering → index building → output validation
+Sequence:
+1. validate source    6. path mapping      11. examples scan
+2. run Doxygen        7. render Markdown    12. search DB
+3. validate XML       8. repo docs          13. validate output
+4. parse XML          9. symbol indexes     14. docs.lock.json
+5. canonical IR      10. relationship idx   15. publish (atomic)
 """
 
 from __future__ import annotations
 
 import json as _json
 import time
+from pathlib import Path
 from typing import Any
 
+from juce_reference.alias_loader import load_aliases
 from juce_reference.config import GeneratorConfig
 from juce_reference.doxygen_runner import classify_doxygen_warnings, run_doxygen
 from juce_reference.errors import GenerationError
+from juce_reference.example_scanner import (
+    build_examples_jsonl,
+    build_examples_markdown,
+    find_example_symbols,
+    scan_examples,
+)
 from juce_reference.index_builder import (
     build_manifest,
     build_relationships_jsonl,
@@ -29,21 +40,16 @@ from juce_reference.repository_docs import import_repository_docs
 from juce_reference.search import build_search_db
 from juce_reference.source import validate_juce_source
 from juce_reference.util.hashing import sha256_hex
-from juce_reference.xml_parser import parse_compound, parse_index
+from juce_reference.xml_parser import get_warnings, parse_compound, parse_index, reset_warnings
 from juce_reference.xml_validator import validate_xml_output
 
 
 def generate(config: GeneratorConfig) -> dict[str, Any]:
-    """Run the complete generation pipeline.
+    """Run the complete generation pipeline into a build candidate directory,
+    then atomically publish to the release root.
 
-    Args:
-        config: Immutable generator configuration.
-
-    Returns:
-        A dict with generation statistics suitable for reports/generation.json.
-
-    Raises:
-        GenerationError: If any stage fails.
+    The intermediate candidate directory is ``.build/<build-id>/candidate/``.
+    The final release directory is ``<output_root>/releases/<commit>/``.
     """
     stats: dict[str, Any] = {
         "started_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -54,17 +60,20 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         },
     }
 
+    # ---- 0. Reset warning accumulators ----
+    reset_warnings()
+
     # ---- 1. Validate JUCE source ----
     juce_source = validate_juce_source(config.juce_root, allow_dirty=config.allow_dirty)
     stats["juce_commit"] = juce_source.commit
     stats["juce_dirty"] = juce_source.dirty
 
-    # ---- 2. Create build context ----
+    # ---- 2. Build directories ----
     build_id = sha256_hex(f"{juce_source.commit}-{time.monotonic()}")[:12]
     build_dir = config.juce_root.parent / ".build" / build_id
-    build_dir.mkdir(parents=True, exist_ok=True)
+    candidate_dir = build_dir / "candidate"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
     output_root = config.output_root
-    output_root.mkdir(parents=True, exist_ok=True)
 
     # ---- 3. Run Doxygen ----
     doxy_result = run_doxygen(juce_source, build_dir)
@@ -74,8 +83,8 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     xml_report = validate_xml_output(doxy_result.xml_dir)
     if not xml_report.all_valid:
         raise GenerationError(
-            f"XML validation failed: {xml_report.valid_compound_count}/{xml_report.compound_count} valid, "
-            f"{len(xml_report.issues)} issues",
+            f"XML validation failed: {xml_report.valid_compound_count}/"
+            f"{xml_report.compound_count} valid, {len(xml_report.issues)} issues"
         )
     stats["xml_validation"] = {
         "compounds": xml_report.compound_count,
@@ -103,7 +112,7 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     path_map = build_path_map(compounds)
 
     # ---- 7. Render Markdown ----
-    reference_dir = output_root / "reference"
+    reference_dir = candidate_dir / "reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     doc_count = 0
     for compound in compounds:
@@ -111,36 +120,82 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         if not target:
             continue
         doc = render_compound(compound, path_map, juce_commit=juce_source.commit)
-        out_path = output_root / target.path
+        out_path = candidate_dir / target.path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(doc.content, encoding="utf-8")
         doc_count += 1
 
     # ---- 8. Import repository docs ----
     repo_docs = import_repository_docs(juce_source)
-    guides_dir = output_root / "guides"
+    guides_dir = candidate_dir / "guides"
     guides_dir.mkdir(parents=True, exist_ok=True)
     for rd in repo_docs:
-        out_path = output_root / rd.output_path
+        out_path = candidate_dir / rd.output_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(rd.content, encoding="utf-8")
     stats["guides_imported"] = len(repo_docs)
 
-    # ---- 9. Build indexes ----
-    index_dir = output_root / "index"
+    # ---- 9. Scan examples ----
+    example_count = 0
+    example_uses: list[Any] = []
+    known_symbols = frozenset(c.qualified_name for c in compounds)
+    known_symbols |= frozenset(m.qualified_name for c in compounds for m in c.members)
+    if juce_source.examples_dir and juce_source.examples_dir.is_dir():
+        examples = scan_examples(juce_source.examples_dir)
+        example_uses = find_example_symbols(examples, juce_source.examples_dir, known_symbols)
+        # Write examples.jsonl
+        examples_dir = candidate_dir / "index"
+        examples_dir.mkdir(parents=True, exist_ok=True)
+        build_examples_jsonl([], example_uses, examples_dir / "examples.jsonl")
+        # Write example navigation pages
+        ex_nav_dir = candidate_dir / "examples"
+        ex_nav_dir.mkdir(parents=True, exist_ok=True)
+        build_examples_markdown(examples, example_uses, ex_nav_dir)
+        example_count = len(examples)
+    stats["examples_found"] = example_count
+    stats["example_symbol_uses"] = len(example_uses)
+
+    # ---- 10. Build symbol indexes ----
+    index_dir = candidate_dir / "index"
     index_dir.mkdir(parents=True, exist_ok=True)
     symbol_count = build_symbols_tsv(compounds, index_dir / "symbols.tsv")
     build_symbols_jsonl(compounds, index_dir / "symbols.jsonl")
     build_relationships_jsonl(compounds, index_dir / "relationships.jsonl")
     build_source_locations_jsonl(compounds, index_dir / "source-locations.jsonl")
-    build_manifest(compounds, doc_count, symbol_count, 0, juce_source.commit,
-                   output_root / "manifest.json")
 
-    # ---- 10. Build search DB ----
-    build_search_db(index_dir / "symbols.jsonl", index_dir / "search.sqlite")
+    # ---- 11. Build search DB with aliases ----
+    alias_config = None
+    if config.aliases_file and config.aliases_file.is_file():
+        all_syms = frozenset(
+            c.qualified_name for c in compounds
+        ) | frozenset(
+            m.qualified_name for c in compounds for m in c.members
+        )
+        alias_config = load_aliases(config.aliases_file, all_syms)
+    build_search_db(index_dir / "symbols.jsonl", index_dir / "search.sqlite",
+                    alias_config=alias_config)
 
-    # ---- 11. Validate output ----
-    validation = validate_output(output_root)
+    # ---- 12. Write docs.lock.json ----
+    _write_docs_lock(candidate_dir, juce_source.commit)
+
+    # ---- 13. Write manifest.json ----
+    build_manifest(compounds, doc_count, symbol_count, example_count,
+                   juce_source.commit, candidate_dir / "manifest.json")
+
+    # ---- 14. Collect formatting warnings ----
+    fmt_warnings = get_warnings()
+    reports_dir = candidate_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "formatting-warnings.json").write_text(
+        _json.dumps(fmt_warnings, indent=2, ensure_ascii=False), encoding="utf-8")
+    stats["formatting_warnings"] = len(fmt_warnings)
+
+    # ---- 15. Write generation report ----
+    (reports_dir / "generation.json").write_text(
+        _json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ---- 16. Validate output ----
+    validation = validate_output(candidate_dir)
     stats["output_validation"] = {
         "passed": validation.passed,
         "errors": validation.statistics.get("errors", 0),
@@ -148,23 +203,45 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     }
     if not validation.passed:
         raise GenerationError(
-            f"Output validation failed with {validation.statistics.get('errors', 0)} errors"
+            f"Output validation failed with "
+            f"{validation.statistics.get('errors', 0)} errors"
         )
 
-    # ---- 12. Publish ----
+    # ---- 17. Publish (atomic) ----
     publish_result = publish_release(
-        output_root, output_root,
+        candidate_dir, output_root,
         juce_source.commit,
+        allow_dirty=config.allow_dirty,
         release=config.release,
     )
     stats["published"] = publish_result.published
 
-    # Write generation report
-    reports_dir = output_root / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / "generation.json").write_text(
-        _json.dumps(stats, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
     return stats
+
+
+# ---- docs.lock.json builder ----
+
+def _write_docs_lock(output_dir: Path, commit: str) -> None:
+    import subprocess
+
+    from juce_reference import __version__ as gen_ver
+
+    doxy_ver = ""
+    try:
+        r = subprocess.run(["doxygen", "--version"], capture_output=True, text=True)
+        doxy_ver = r.stdout.strip()
+    except Exception:
+        pass
+
+    # Python version from runtime
+    import sys
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+
+    lock = {
+        "schema_version": 1,
+        "juce": {"commit": commit, "dirty": False},
+        "toolchain": {"python": py_ver, "doxygen": doxy_ver, "generator": gen_ver},
+        "schemas": {"ir": 1, "markdown": 1, "index": 1},
+    }
+    (output_dir / "docs.lock.json").write_text(
+        _json.dumps(lock, indent=2, ensure_ascii=False), encoding="utf-8")

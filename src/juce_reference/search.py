@@ -156,13 +156,13 @@ def search_symbol(
     params: list[Any] = [fts_query]
 
     if kind_filter:
-        where_clauses.append("kind = ?")
+        where_clauses.append("s.kind = ?")
         params.append(kind_filter)
     if module_filter:
-        where_clauses.append("module = ?")
+        where_clauses.append("s.module = ?")
         params.append(module_filter)
     if public_only:
-        where_clauses.append("(access IS NULL OR access = 'public')")
+        where_clauses.append("(s.access IS NULL OR s.access = 'public')")
 
     sql = f"""
         SELECT s.symbol, s.short_name, s.kind, s.module,

@@ -21,8 +21,10 @@ def test_validation_issue_create() -> None:
 
 
 def test_validate_empty_dir(tmp_path: Path) -> None:
+    # Empty dir now correctly FAILS (missing all required files)
     report = validate_output(tmp_path)
-    assert report.passed is True
+    assert report.passed is False
+    assert any(i.code == "empty-output" for i in report.issues)
 
 
 def test_validate_missing_links(tmp_path: Path) -> None:

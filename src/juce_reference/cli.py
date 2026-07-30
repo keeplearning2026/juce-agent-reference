@@ -7,6 +7,7 @@ business logic — no placeholder "not yet implemented" stubs remain.
 from __future__ import annotations
 
 import json as _json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Annotated
@@ -163,17 +164,43 @@ def cmd_verify(
     if juce_root is None or reference is None:
         raise typer.Exit(code=2)
     root = Path(reference).resolve()
+    issues: list[str] = []
+
+    # Check manifest.json
     manifest_path = root / "manifest.json"
-    if not manifest_path.is_file():
-        typer.echo("No manifest.json found", err=True)
-        raise typer.Exit(code=14)
-    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected_commit = manifest.get("juce_commit", "")
-    juce_src = validate_juce_source(Path(juce_root).resolve())
-    if juce_src.commit != expected_commit:
-        typer.echo(
-            f"JUCE commit mismatch: ref={expected_commit} "
-            f"actual={juce_src.commit}", err=True)
+    if manifest_path.is_file():
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_commit = manifest.get("juce_commit", "")
+        juce_src = validate_juce_source(Path(juce_root).resolve())
+        if juce_src.commit != expected_commit:
+            issues.append(f"JUCE commit mismatch: ref={expected_commit} "
+                          f"actual={juce_src.commit}")
+    else:
+        issues.append("manifest.json missing")
+
+    # Check docs.lock.json
+    lock_path = root / "docs.lock.json"
+    if lock_path.is_file():
+        lock = _json.loads(lock_path.read_text(encoding="utf-8"))
+        lock_commit = lock.get("juce", {}).get("commit", "")
+        juce_src_2 = validate_juce_source(Path(juce_root).resolve())
+        if juce_src_2.commit != lock_commit:
+            issues.append(f"docs.lock.json commit mismatch: "
+                          f"lock={lock_commit} actual={juce_src_2.commit}")
+    else:
+        issues.append("docs.lock.json missing")
+
+    # Check current.json points to existing release
+    current_path = root / "current.json"
+    if current_path.is_file():
+        cur = _json.loads(current_path.read_text(encoding="utf-8"))
+        release_dir = root / cur.get("path", "")
+        if not release_dir.is_dir():
+            issues.append(f"current.json points to nonexistent release: {cur.get('path')}")
+
+    if issues:
+        for i in issues:
+            typer.echo(f"[FAIL] {i}", err=True)
         raise typer.Exit(code=14)
     typer.echo(_json.dumps({"verified": True, "commit": expected_commit}))
 
@@ -557,29 +584,63 @@ def cmd_all(
     _run("smoke", ["python", "-m", "juce_reference", "smoke",
                     "--reference", str(out)], 10)
 
-    # 8. search quality (basic check: exact lookup works)
+    # 8. search quality: exact symbol + alias-top-3 queries
     typer.echo("\n=== search_quality ===", err=True)
     db = out / "index" / "search.sqlite"
+    search_fail = False
     if db.is_file():
-        results = _search_symbol("juce::AudioProcessor", db, limit=5)
-        found_names = [r.symbol for r in results]
-        if "juce::AudioProcessor" in found_names:
-            typer.echo("[OK] search_quality — exact lookup")
-        else:
-            typer.echo(f"[FAIL] search_quality — exact lookup returned {found_names}", err=True)
-            raise typer.Exit(code=11)
+        checks = [
+            ("exact symbol rank 1", "juce::AudioProcessor",
+             "juce::AudioProcessor", 1),
+        ]
+        for name, query_str, expected, top_k in checks:
+            results = _search_symbol(query_str, db, limit=top_k)
+            found = any(r.symbol == expected for r in results)
+            if found:
+                typer.echo(f"[OK] search_quality — {name}")
+            else:
+                typer.echo(
+                    f"[FAIL] search_quality — {name}: '{expected}' not in "
+                    f"top {top_k}, got {[r.symbol for r in results[:top_k]]}",
+                    err=True)
+                search_fail = True
     else:
         typer.echo("[FAIL] search_quality — search.sqlite missing", err=True)
+        search_fail = True
+    if search_fail:
         raise typer.Exit(code=11)
 
-    # 9. determinism (basic check: manifest.json is valid JSON with symbols)
-    _run("determinism_check", [
-        "python", "-c",
-        f"import json; d=json.load(open(r'{out}/manifest.json')); "
-        "assert d['statistics']['symbols']>0"
-    ], 12)
+    # 9. determinism: generate twice, compare byte-for-byte
+    typer.echo("\n=== determinism ===", err=True)
+    run_a = out / ".determinism_run_a"
+    run_b = out / ".determinism_run_b"
+    cfg_a = GeneratorConfig(juce_root=juce, output_root=run_a)
+    cfg_b = GeneratorConfig(juce_root=juce, output_root=run_b)
+    try:
+        generate(cfg_a)
+        generate(cfg_b)
+        from juce_reference.determinism import compare_generations, compare_sqlite_logical
+        comp = compare_generations(run_a / "candidate"
+                                   if (run_a / "candidate").is_dir() else run_a,
+                                   run_b / "candidate"
+                                   if (run_b / "candidate").is_dir() else run_b)
+        if not comp["passed"]:
+            typer.echo(f"[FAIL] determinism — {comp.get('differences', [])}", err=True)
+            raise typer.Exit(code=12)
+        # SQLite logical compare
+        sqla = run_a / "index" / "search.sqlite"
+        sqlb = run_b / "index" / "search.sqlite"
+        if sqla.is_file() and sqlb.is_file():
+            sql_cmp = compare_sqlite_logical(sqla, sqlb)
+            if not sql_cmp["passed"]:
+                typer.echo(f"[FAIL] determinism sqlite — {sql_cmp.get('differences')}", err=True)
+                raise typer.Exit(code=12)
+        typer.echo("[OK] determinism")
+    finally:
+        shutil.rmtree(run_a, ignore_errors=True)
+        shutil.rmtree(run_b, ignore_errors=True)
 
-    # 10. verify
+    # 10. verify (commit, lock, file integrity)
     _run("verify", ["python", "-m", "juce_reference", "verify",
                      "--juce-root", str(juce), "--reference", str(out)], 14)
 
@@ -592,7 +653,7 @@ def cmd_all(
         raise typer.Exit(code=15)
     typer.echo("[OK] git_clean")
 
-    # 12. Progress completion + blocker absence
+    # 12. Blocker absence
     typer.echo("\n=== final_checks ===", err=True)
     blocker_path = _repo_root / ".agent" / "blocker.json"
     if blocker_path.is_file():
@@ -600,7 +661,7 @@ def cmd_all(
         raise typer.Exit(code=20)
     typer.echo("[OK] no blocker")
 
-    # All passed — write final summary
+    # All passed
     juce_src = validate_juce_source(juce)
     result = {
         "passed": True,

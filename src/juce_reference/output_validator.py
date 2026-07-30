@@ -18,6 +18,22 @@ from juce_reference.util.markdown import (
     internal_links,
 )
 
+_REQUIRED_OUTPUT_FILES = [
+    "manifest.json",
+    "docs.lock.json",
+    "reference/",
+    "index/symbols.tsv",
+    "index/symbols.jsonl",
+    "index/relationships.jsonl",
+    "index/source-locations.jsonl",
+    "index/examples.jsonl",
+    "index/search.sqlite",
+    "guides/",
+    "examples/",
+    "examples/INDEX.md",
+    "reports/validation.json",
+]
+
 
 @dataclass(frozen=True)
 class ValidationIssue:
@@ -50,10 +66,14 @@ def validate_output(reference_root: Path) -> ValidationReport:
     """
     issues: list[ValidationIssue] = []
 
+    # P0: Reject empty directories outright.
+    issues.extend(_validate_nonempty(reference_root))
+
     issues.extend(_validate_paths(reference_root))
     issues.extend(_validate_markdown_files(reference_root))
     issues.extend(_validate_indexes(reference_root))
     issues.extend(_validate_links(reference_root))
+    issues.extend(_validate_required_files(reference_root, _REQUIRED_OUTPUT_FILES))
 
     errors = [i for i in issues if i.severity == "error"]
     stats: dict[str, int] = {
@@ -67,6 +87,29 @@ def validate_output(reference_root: Path) -> ValidationReport:
         issues=tuple(issues),
         statistics=stats,
     )
+
+
+def _validate_nonempty(root: Path) -> list[ValidationIssue]:
+    """Reject output directories that have no content at all."""
+    md_count = len(list(root.rglob("*.md")))
+    manifest_exists = (root / "manifest.json").is_file()
+    if md_count == 0 and not manifest_exists:
+        return [ValidationIssue(
+            severity="error", code="empty-output",
+            message="Output directory has no Markdown or manifest — generation may have failed")]
+    return []
+
+
+def _validate_required_files(root: Path, required: list[str]) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for path_str in required:
+        p = root / path_str
+        exists = (p.is_dir() if path_str.endswith("/") else p.is_file())
+        if not exists:
+            issues.append(ValidationIssue(
+                severity="error", code="missing-required-file",
+                message=f"Required file/directory missing: {path_str}"))
+    return issues
 
 
 def _validate_paths(root: Path) -> list[ValidationIssue]:
