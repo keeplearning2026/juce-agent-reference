@@ -31,7 +31,7 @@ _REQUIRED_OUTPUT_FILES = [
     "guides/",
     "examples/",
     "examples/INDEX.md",
-    "reports/validation.json",
+    "reports/generation.json",
 ]
 
 
