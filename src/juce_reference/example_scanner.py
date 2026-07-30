@@ -119,7 +119,6 @@ def find_example_symbols(
     uses: list[ExampleSymbolUse] = []
 
     for ex in examples:
-        ex_dir = examples_root / ex.directory
         for fname in ex.files:
             fpath = examples_root / fname
             try:
