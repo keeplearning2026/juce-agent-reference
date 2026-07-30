@@ -568,30 +568,36 @@ def cmd_all(
 
     # 5. generate real reference
     typer.echo("\n=== generate ===", err=True)
-    cfg = GeneratorConfig(juce_root=juce, output_root=out)
+    cfg = GeneratorConfig(
+        juce_root=juce, output_root=out,
+        aliases_file=_repo_root / "config" / "aliases.yml",
+    )
     try:
         stats = generate(cfg)
+        candidate = Path(stats["candidate_path"])
         typer.echo(f"[OK] generate — {stats.get('parsed_compounds', 0)} compounds")
     except Exception as exc:
         typer.echo(f"[FAIL] generate: {exc}", err=True)
         raise typer.Exit(code=8) from exc
 
-    # 6. validate output
+    # 6. validate output (use real candidate path from generate result)
     _run("validate", ["python", "-m", "juce_reference", "validate",
-                       "--reference", str(out)], 9)
+                       "--reference", str(candidate)], 9)
 
-    # 7. smoke
+    # 7. smoke (use real candidate path)
     _run("smoke", ["python", "-m", "juce_reference", "smoke",
-                    "--reference", str(out)], 10)
+                    "--reference", str(candidate)], 10)
 
-    # 8. search quality: exact symbol + alias-top-3 queries
+    # 8. search quality: exact + alias + concept queries
     typer.echo("\n=== search_quality ===", err=True)
-    db = out / "index" / "search.sqlite"
+    db = candidate / "index" / "search.sqlite"
     search_fail = False
     if db.is_file():
         checks = [
-            ("exact symbol rank 1", "juce::AudioProcessor",
-             "juce::AudioProcessor", 1),
+            ("exact rank 1", "juce::AudioProcessor", "juce::AudioProcessor", 1),
+            ("alias APVTS top 3", "APVTS", "juce::AudioProcessorValueTreeState", 3),
+            ("concept save state top 5", "save plugin parameter state",
+             "juce::AudioProcessorValueTreeState", 5),
         ]
         for name, query_str, expected, top_k in checks:
             results = _search_symbol(query_str, db, limit=top_k)
@@ -617,32 +623,32 @@ def cmd_all(
     cfg_a = GeneratorConfig(juce_root=juce, output_root=run_a)
     cfg_b = GeneratorConfig(juce_root=juce, output_root=run_b)
     try:
-        generate(cfg_a)
-        generate(cfg_b)
+        stats_a = generate(cfg_a)
+        stats_b = generate(cfg_b)
         from juce_reference.determinism import compare_generations, compare_sqlite_logical
-        comp = compare_generations(run_a / "candidate"
-                                   if (run_a / "candidate").is_dir() else run_a,
-                                   run_b / "candidate"
-                                   if (run_b / "candidate").is_dir() else run_b)
-        if not comp["passed"]:
-            typer.echo(f"[FAIL] determinism — {comp.get('differences', [])}", err=True)
+        cand_a = Path(stats_a["candidate_path"])
+        cand_b = Path(stats_b["candidate_path"])
+        comp = compare_generations(cand_a, cand_b)
+        if not comp["passed"] or comp.get("files_compared", 0) == 0:
+            typer.echo(
+                f"[FAIL] determinism — compared={comp.get('files_compared', 0)} "
+                f"diffs={comp.get('differences', [])}", err=True)
             raise typer.Exit(code=12)
-        # SQLite logical compare
-        sqla = run_a / "index" / "search.sqlite"
-        sqlb = run_b / "index" / "search.sqlite"
+        sqla = cand_a / "index" / "search.sqlite"
+        sqlb = cand_b / "index" / "search.sqlite"
         if sqla.is_file() and sqlb.is_file():
             sql_cmp = compare_sqlite_logical(sqla, sqlb)
             if not sql_cmp["passed"]:
                 typer.echo(f"[FAIL] determinism sqlite — {sql_cmp.get('differences')}", err=True)
                 raise typer.Exit(code=12)
-        typer.echo("[OK] determinism")
+        typer.echo(f"[OK] determinism — {comp.get('files_compared', 0)} files identical")
     finally:
         shutil.rmtree(run_a, ignore_errors=True)
         shutil.rmtree(run_b, ignore_errors=True)
 
     # 10. verify (commit, lock, file integrity)
     _run("verify", ["python", "-m", "juce_reference", "verify",
-                     "--juce-root", str(juce), "--reference", str(out)], 14)
+                     "--juce-root", str(juce), "--reference", str(candidate)], 14)
 
     # 11. Git cleanliness
     typer.echo("\n=== git_clean ===", err=True)
