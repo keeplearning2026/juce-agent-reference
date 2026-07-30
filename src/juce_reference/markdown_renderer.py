@@ -450,16 +450,17 @@ def _relative_link(
 ) -> str:
     """Compute a relative POSIX link from one output file to another."""
     import os.path
-    from_path = current_path if current_path else (
-        path_map.compounds.get(current_refid or "", "").path
-        if current_refid and current_refid in path_map.compounds else ""
-    )
+    from_path = current_path
+    if not from_path and current_refid:
+        ct = path_map.compounds.get(current_refid)
+        if ct is not None:
+            from_path = ct.path
     if from_path and os.path.dirname(from_path):
         try:
             return os.path.relpath(target_path, os.path.dirname(from_path)).replace("\\", "/")
         except ValueError:
             pass
-    return f"./{target_path}"
+    return f"{target_path}"
 
 
 def _ref_to_link(ref: Reference, path_map: PathMap) -> str | None:

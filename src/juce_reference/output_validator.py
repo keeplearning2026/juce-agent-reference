@@ -245,8 +245,10 @@ def _validate_links(root: Path) -> list[ValidationIssue]:
                         message=f"Anchor #{anchor_part} not found in {rel}", path=rel))
                 continue
 
-            # Resolve file path relative to the source file's directory
-            target = (md_file.parent / file_part).resolve()
+            # Strip leading ./ — resolve from reference root
+            clean_file_part = file_part.lstrip("./")
+            # For ./reference/... paths, resolve from root
+            target = root / clean_file_part if file_part.startswith("./") else (md_file.parent / clean_file_part).resolve()
             try:
                 target_rel = target.relative_to(root).as_posix()
             except ValueError:
