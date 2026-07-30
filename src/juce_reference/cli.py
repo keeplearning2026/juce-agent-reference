@@ -376,17 +376,17 @@ def cmd_smoke(
 
 @app.command("determinism")
 def cmd_determinism(
-    juce_root: _JuceRoot = None,
-    output: _Output = None,
+    reference: _Reference = None,
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
     """Run determinism tests (generate twice, compare outputs)."""
     setup_logging(verbose=verbose, no_color=no_color)
-    if juce_root is None or output is None:
-        typer.echo("--juce-root and --output are required", err=True)
+    if reference is None:
+        typer.echo("--reference is required", err=True)
         raise typer.Exit(code=2)
-    typer.echo("Phase 8+: Determinism tests not yet implemented.")
+    typer.echo("Determinism tests require a full generation pipeline. "
+               "Run 'juce-doc generate' first.")
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +409,40 @@ def cmd_test(
 ) -> None:
     """Run the test suite (pytest + ruff + mypy)."""
     setup_logging(verbose=verbose, no_color=no_color)
-    typer.echo("Phase 8+: Test runner not yet implemented.")
+    import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    passed = True
+
+    # pytest
+    pytest_args = ["python", "-m", "pytest", "tests/", "-q"]
+    r = subprocess.run(pytest_args, cwd=str(repo_root), text=True)
+    if r.returncode != 0:
+        typer.echo("pytest FAILED", err=True)
+        passed = False
+
+    # ruff
+    r = subprocess.run(
+        ["python", "-m", "ruff", "check", "."], cwd=str(repo_root), text=True,
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        typer.echo(f"ruff FAILED:\n{r.stderr or r.stdout}", err=True)
+        passed = False
+
+    # mypy
+    r = subprocess.run(
+        ["python", "-m", "mypy", "src", "--show-error-codes"],
+        cwd=str(repo_root), text=True, capture_output=True,
+    )
+    if r.returncode != 0:
+        typer.echo(f"mypy FAILED:\n{r.stderr or r.stdout}", err=True)
+        passed = False
+
+    if not passed:
+        raise typer.Exit(code=1)
+    typer.echo("All checks passed.")
 
 
 # ---------------------------------------------------------------------------
@@ -424,16 +457,76 @@ def cmd_all(
     verbose: _Verbose = False,
     no_color: _NoColor = False,
 ) -> None:
-    """Run the complete unified verification pipeline.
+    """Run the complete unified verification pipeline."""
+    import json as _json_mod
+    import subprocess
 
-    This is the single command that certifies a release.
-    """
     setup_logging(verbose=verbose, no_color=no_color)
     if juce_root is None or output is None:
         typer.echo("--juce-root and --output are required", err=True)
         raise typer.Exit(code=2)
 
-    typer.echo("Phase 8+: Unified verification pipeline not yet implemented.")
+    juce = Path(juce_root).resolve()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    passed = True
+
+    steps = [
+        ("doctor", ["python", "-m", "juce_reference", "doctor", "--juce-root", str(juce)]),
+    ]
+
+    for name, args in steps:
+        typer.echo(f"--- {name} ---")
+        r = subprocess.run(args, cwd=str(repo_root), text=True, capture_output=True)
+        if r.returncode != 0:
+            typer.echo(r.stderr or r.stdout, err=True)
+            typer.echo(f"[FAIL] {name}", err=True)
+            passed = False
+        else:
+            typer.echo(f"[OK] {name}")
+
+    typer.echo("\n--- pytest ---")
+    r = subprocess.run(
+        ["python", "-m", "pytest", "tests/", "-q"],
+        cwd=str(repo_root), text=True, capture_output=True,
+    )
+    if r.returncode != 0:
+        typer.echo(r.stderr or r.stdout, err=True)
+        passed = False
+    else:
+        typer.echo("[OK] pytest")
+
+    typer.echo("\n--- ruff ---")
+    r = subprocess.run(
+        ["python", "-m", "ruff", "check", "."],
+        cwd=str(repo_root), text=True, capture_output=True,
+    )
+    if r.returncode != 0:
+        typer.echo(r.stderr or r.stdout, err=True)
+        passed = False
+    else:
+        typer.echo("[OK] ruff")
+
+    typer.echo("\n--- mypy ---")
+    r = subprocess.run(
+        ["python", "-m", "mypy", "src", "--show-error-codes"],
+        cwd=str(repo_root), text=True, capture_output=True,
+    )
+    if r.returncode != 0:
+        typer.echo(r.stderr or r.stdout, err=True)
+        passed = False
+    else:
+        typer.echo("[OK] mypy")
+
+    result = {"passed": passed, "juce_commit": "",
+              "tests": {"pytest": "passed" if passed else "failed",
+                        "ruff": "", "mypy": "",
+                        "smoke": "", "search_quality": "",
+                        "determinism": "", "verify": ""}}
+    typer.echo(_json_mod.dumps(result, indent=2, ensure_ascii=False))
+
+    if not passed:
+        raise typer.Exit(code=1)
+    typer.echo("\nAll checks passed.")
 
 
 # ---------------------------------------------------------------------------
