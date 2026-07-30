@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<doxygen>
+  <compounddef id="class_juce_1_1_audio_processor" kind="class" prot="public">
+    <compoundname>juce::AudioProcessor</compoundname>
+    <title>AudioProcessor Class Reference</title>
+    <basecompoundref refid="class_juce_1_1_reference_counted_object" prot="public">juce::ReferenceCountedObject</basecompoundref>
+    <briefdescription>
+      <para>Base class for audio processing plugins.</para>
+    </briefdescription>
+    <detaileddescription>
+      <para>An AudioProcessor is the core class for creating audio plugins
+      in JUCE.  It handles audio and MIDI I/O, parameter management,
+      and plugin state serialisation.</para>
+      <para>
+        <simplesect kind="note">
+          <para>All virtual methods must be called on the message thread
+          unless documented otherwise.</para>
+        </simplesect>
+      </para>
+      <para>
+        <simplesect kind="warning">
+          <para>Do not leak AudioProcessor instances.</para>
+        </simplesect>
+      </para>
+    </detaileddescription>
+    <location file="modules/juce_audio_processors/processors/juce_AudioProcessor.h" line="123" column="7"/>
+    <sectiondef kind="public-func">
+      <memberdef id="class_juce_1_1_audio_processor_1a_process_block" kind="function" prot="public" static="no" const="no" virt="pure-virtual">
+        <name>processBlock</name>
+        <qualifiedname>juce::AudioProcessor::processBlock</qualifiedname>
+        <type>
+          <ref refid="namespacejuce" kindref="namespace">juce</ref>::AudioBuffer&lt;float&gt;
+        </type>
+        <definition>void processBlock</definition>
+        <argsstring>(AudioBuffer&lt;float&gt; &amp;buffer, MidiBuffer &amp;midiMessages)</argsstring>
+        <briefdescription>
+          <para>Process a block of audio and MIDI data.</para>
+        </briefdescription>
+        <detaileddescription>
+          <para>The main audio processing callback.  Override this in your
+          subclass to do the actual processing.</para>
+          <para>
+            <parameterlist kind="param">
+              <parameteritem>
+                <parameternamelist>
+                  <parametername>buffer</parametername>
+                </parameternamelist>
+                <parameterdescription>
+                  <para>The audio buffer to fill.</para>
+                </parameterdescription>
+              </parameteritem>
+              <parameteritem>
+                <parameternamelist>
+                  <parametername>midiMessages</parametername>
+                </parameternamelist>
+                <parameterdescription>
+                  <para>Incoming MIDI messages.</para>
+                </parameterdescription>
+              </parameteritem>
+            </parameterlist>
+          </para>
+          <para>
+            <simplesect kind="return">
+              <para>Nothing.</para>
+            </simplesect>
+          </para>
+        </detaileddescription>
+        <location file="modules/juce_audio_processors/processors/juce_AudioProcessor.h" line="200" column="9"/>
+      </memberdef>
+    </sectiondef>
+  </compounddef>
+</doxygen>

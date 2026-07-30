@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<doxygenindex version="1.9.5">
+  <compound refid="class_juce_1_1_audio_processor" kind="class">
+    <name>juce::AudioProcessor</name>
+    <member refid="class_juce_1_1_audio_processor_1a_process_block" kind="function">
+      <name>processBlock</name>
+    </member>
+  </compound>
+  <compound refid="struct_juce_1_1_audio_buffer" kind="struct">
+    <name>juce::AudioBuffer</name>
+  </compound>
+  <compound refid="namespacejuce" kind="namespace">
+    <name>juce</name>
+  </compound>
+</doxygenindex>
