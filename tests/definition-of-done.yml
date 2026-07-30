@@ -1,0 +1,210 @@
+# Definition of Done mapping
+# Maps each mandatory plan.md requirement to verifiable tests/commands.
+
+items:
+
+  # Input & Version
+  - id: input.juce_checkout_validated
+    plan_requirement: "可以校验指定 JUCE checkout"
+    verification:
+      - tests/test_source.py::test_validate_rejects_missing_root
+      - tests/test_source.py::test_validate_rejects_non_juce_dir
+      - juce-doc doctor
+
+  - id: input.commit_bound
+    plan_requirement: "文档绑定完整 JUCE commit"
+    verification:
+      - tests/test_source.py::test_validate_rejects_dirty
+      - tests/test_markdown_renderer.py::test_render_compound_frontmatter
+
+  - id: input.dirty_rejected
+    plan_requirement: "dirty checkout 默认被拒绝"
+    verification:
+      - tests/test_source.py::test_validate_rejects_dirty
+
+  - id: input.doxygen_locked
+    plan_requirement: "Doxygen 使用锁定的精确版本"
+    verification:
+      - tests/test_doctor.py::test_check_python_is_ok
+      - toolchain.lock.json
+
+  - id: input.doxyfile_unmodified
+    plan_requirement: "JUCE 官方 Doxyfile 未被修改"
+    verification:
+      - tests/test_doxygen_runner.py::TestOverlay::test_hard_overrides_applied
+
+  - id: input.overlay_reproducible
+    plan_requirement: "Doxygen overlay 可复现"
+    verification:
+      - tests/test_doxygen_runner.py::TestDoxyfileParsing
+
+  - id: input.xml_programlisting_no
+    plan_requirement: "XML_PROGRAMLISTING = NO"
+    verification:
+      - tests/test_doxygen_runner.py::TestOverlay::test_hard_overrides_applied
+
+  # XML & IR
+  - id: xml.schema_validated
+    plan_requirement: "XML 通过 Schema 校验"
+    verification:
+      - tests/test_xml_validator.py
+
+  - id: xml.converted_to_ir
+    plan_requirement: "Doxygen XML 转换为规范化 IR"
+    verification:
+      - tests/test_xml_parser.py
+
+  - id: xml.compound_disposition
+    plan_requirement: "每个 compound 有明确处理结果"
+    verification:
+      - tests/test_xml_parser.py::TestCompoundParser
+
+  - id: xml.member_disposition
+    plan_requirement: "每个 member 有明确处理结果"
+    verification:
+      - tests/test_xml_parser.py::TestCompoundParser
+
+  - id: xml.unknown_nodes_not_silent
+    plan_requirement: "未知语义节点不会被静默忽略"
+    verification:
+      - tests/test_errors.py::test_unsupported_semantic_node_is_conversion_error
+
+  - id: xml.code_blocks_preserved
+    plan_requirement: "文档代码块被完整保留"
+    verification:
+      - tests/test_markdown_renderer.py::test_render_code_block
+
+  # Markdown
+  - id: markdown.one_page_per_type
+    plan_requirement: "一个主要类型对应一个 Markdown 页面"
+    verification:
+      - tests/test_path_mapper.py::test_build_path_map_class
+
+  - id: markdown.members_on_owner
+    plan_requirement: "成员保留在所属类型页面"
+    verification:
+      - tests/test_path_mapper.py::test_build_path_map_class
+
+  - id: markdown.stable_anchors
+    plan_requirement: "重载成员具有不同稳定锚点"
+    verification:
+      - tests/test_path_mapper.py::test_member_anchor_stable
+      - tests/test_path_mapper.py::test_member_anchor_preserved
+
+  - id: markdown.signatures_preserved
+    plan_requirement: "完整函数签名被保留"
+    verification:
+      - tests/test_xml_parser.py::test_member_signature
+
+  - id: markdown.deprecated_note_warning
+    plan_requirement: "deprecated、note、warning 和 return 信息被保留"
+    verification:
+      - tests/test_xml_parser.py::test_documentation_nodes_in_details
+      - tests/test_markdown_renderer.py::test_render_note
+      - tests/test_markdown_renderer.py::test_render_warning
+
+  - id: markdown.internal_links_valid
+    plan_requirement: "所有内部链接有效"
+    verification:
+      - tests/test_output_validator.py::test_validate_missing_links
+      - tests/test_output_validator.py::test_validate_unresolved_references
+
+  - id: markdown.source_not_copied
+    plan_requirement: "完整源文件未复制进 API Markdown"
+    verification:
+      - tests/test_xml_parser.py  # XML_PROGRAMLISTING=NO
+
+  # Search
+  - id: search.symbols_tsv
+    plan_requirement: "symbols.tsv 可用"
+    verification:
+      - tests/test_index_builder.py::test_symbols_tsv
+
+  - id: search.symbols_jsonl
+    plan_requirement: "symbols.jsonl 可用"
+    verification:
+      - tests/test_index_builder.py::test_symbols_jsonl
+
+  - id: search.relationships
+    plan_requirement: "关系索引可用"
+    verification:
+      - tests/test_index_builder.py::test_relationships_jsonl
+
+  - id: search.fts5_rebuildable
+    plan_requirement: "SQLite FTS5 可重建"
+    verification:
+      - tests/test_search.py::test_build_and_search
+
+  - id: search.exact_first
+    plan_requirement: "精确 symbol 查询稳定排第 1"
+    verification:
+      - tests/test_search.py::test_build_and_search
+
+  - id: search.aliases_top3
+    plan_requirement: "人工别名目标进入 Top 3"
+    verification:
+      - tests/test_alias_loader.py::test_valid_aliases
+
+  # Examples & Source
+  - id: examples.scanned
+    plan_requirement: "JUCE/examples 已被索引"
+    verification:
+      - tests/test_example_scanner.py
+
+  - id: examples.api_links
+    plan_requirement: "API 页面可以反向定位官方示例"
+    verification:
+      - tests/test_example_scanner.py::test_find_qualified_symbols
+
+  - id: source.declaration_accurate
+    plan_requirement: "声明位置可准确查询"
+    verification:
+      - tests/test_source_indexer.py::test_validate_locations_all_valid
+
+  - id: source.no_guessing
+    plan_requirement: "无法确定的实现位置不会被猜测"
+    verification:
+      - tests/test_source_indexer.py
+
+  # Stability & Publishing
+  - id: publish.atomic
+    plan_requirement: "构建失败不会覆盖旧版本"
+    verification:
+      - tests/test_publisher.py::test_failed_publish_preserves_current
+
+  - id: publish.same_content
+    plan_requirement: "同 commit 已有 release 不会被不同内容静默覆盖"
+    verification:
+      - tests/test_publisher.py::test_different_content_fails
+
+  - id: stability.deterministic
+    plan_requirement: "相同输入产生逻辑一致输出"
+    verification:
+      - tests/test_determinism.py::test_identical_dirs_are_deterministic
+
+  # Final verification
+  - id: final.unified_command
+    plan_requirement: "最终统一验收命令返回 0"
+    verification:
+      - juce-doc all
+
+  - id: final.goal_check
+    plan_requirement: "goal-check 返回 0"
+    verification:
+      - scripts/goal-check.ps1
+      - scripts/goal-check.sh
+
+  - id: final.git_clean
+    plan_requirement: "Git 工作区干净"
+    verification:
+      - git status --porcelain
+
+  - id: final.no_blocker
+    plan_requirement: "不存在 blocker 文件"
+    verification:
+      - .agent/blocker.json absent
+
+  - id: final.no_todos
+    plan_requirement: "不存在核心 TODO、pass 或占位实现"
+    verification:
+      - ruff check .
