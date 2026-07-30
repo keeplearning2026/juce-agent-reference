@@ -164,15 +164,17 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     build_relationships_jsonl(compounds, index_dir / "relationships.jsonl")
     build_source_locations_jsonl(compounds, index_dir / "source-locations.jsonl")
 
-    # ---- 11. Build search DB with aliases ----
-    alias_config = None
-    if config.aliases_file and config.aliases_file.is_file():
-        all_syms = frozenset(
-            c.qualified_name for c in compounds
-        ) | frozenset(
-            m.qualified_name for c in compounds for m in c.members
-        )
-        alias_config = load_aliases(config.aliases_file, all_syms)
+    # ---- 11. Build search DB with aliases (always load default) ----
+    all_syms = frozenset(
+        c.qualified_name for c in compounds
+    ) | frozenset(
+        m.qualified_name for c in compounds for m in c.members
+    )
+    aliases_path = config.aliases_file or (config.output_root.parent / "config" / "aliases.yml")
+    if not aliases_path.is_file():
+        # fallback: repo root config/aliases.yml
+        aliases_path = Path(__file__).parent.parent.parent / "config" / "aliases.yml"
+    alias_config = load_aliases(aliases_path, all_syms) if aliases_path.is_file() else None
     build_search_db(index_dir / "symbols.jsonl", index_dir / "search.sqlite",
                     alias_config=alias_config)
 
@@ -191,11 +193,7 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         _json.dumps(fmt_warnings, indent=2, ensure_ascii=False), encoding="utf-8")
     stats["formatting_warnings"] = len(fmt_warnings)
 
-    # ---- 15. Write generation report ----
-    (reports_dir / "generation.json").write_text(
-        _json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # ---- 16. Validate output ----
+    # ---- 15. Validate output ----
     validation = validate_output(candidate_dir)
     stats["output_validation"] = {
         "passed": validation.passed,
@@ -229,6 +227,13 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         release=config.release,
     )
     stats["published"] = publish_result.published
+    stats["candidate_path"] = str(candidate_dir)
+    stats["published_path"] = str(publish_result.release_path)
+    # Exclude non-deterministic data from generation.json
+    _nondeterministic = {"started_at_iso", "config"}
+    det_stats = {k: v for k, v in stats.items() if k not in _nondeterministic}
+    (reports_dir / "generation.json").write_text(
+        _json.dumps(det_stats, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return stats
 

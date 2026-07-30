@@ -58,6 +58,18 @@ def publish_release(
     if not release:
         return PublishResult(published=False, release_path=candidate_dir)
 
+    # Dirty builds cannot publish as official releases
+    if not allow_dirty:
+        # Check if the candidate manifest indicates dirty source
+        manifest_path = candidate_dir / "manifest.json"
+        if manifest_path.is_file():
+            import json
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("juce_dirty"):
+                raise PublishError(
+                    "Cannot publish a dirty JUCE checkout as a release",
+                    suggestion="Use --allow-dirty or commit JUCE changes first")
+
     releases_dir = output_root / "releases"
     release_dir = releases_dir / juce_commit
 

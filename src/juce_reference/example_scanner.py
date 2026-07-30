@@ -84,7 +84,7 @@ def scan_examples(examples_root: Path) -> list[ExampleInfo]:
             if not ex_dir.is_dir():
                 continue
             ex_name = ex_dir.name
-            files = _collect_files(ex_dir)
+            files = _collect_files_recursive(ex_dir, examples_root)
             if files:
                 examples.append(ExampleInfo(
                     name=ex_name,
@@ -121,7 +121,7 @@ def find_example_symbols(
     for ex in examples:
         ex_dir = examples_root / ex.directory
         for fname in ex.files:
-            fpath = ex_dir / fname
+            fpath = examples_root / fname
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -253,11 +253,12 @@ def build_examples_markdown(
     return count
 
 
-def _collect_files(directory: Path) -> list[str]:
-    """Collect source files from an example directory (shallow)."""
+def _collect_files_recursive(directory: Path, root: Path) -> list[str]:
+    """Collect source files from an example directory (recursive)."""
     files: list[str] = []
-    for child in sorted(directory.iterdir()):
-        is_scan_ext = child.is_file() and child.suffix.lower() in _SCAN_EXTENSIONS
-        if is_scan_ext or child.name == "CMakeLists.txt":
-            files.append(child.name)
+    for child in sorted(directory.rglob("*")):
+        if child.is_file():
+            is_scan_ext = child.suffix.lower() in _SCAN_EXTENSIONS
+            if is_scan_ext or child.name == "CMakeLists.txt":
+                files.append(str(child.relative_to(root)))
     return files
