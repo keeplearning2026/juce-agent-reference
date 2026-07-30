@@ -1,0 +1,42 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8082",
+    "ANTHROPIC_AUTH_TOKEN" : "ccr_claude_anthropic_03cf3332-e543-4349-b95c-f0994d212a89",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-pro[1m]",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-pro[1m]",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "DISABLE_UPDATES": "1",
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "fmt() { n=$1; if [ \"$n\" -ge 1000000 ]; then echo \"$(awk \"BEGIN{printf \\\"%.1f\\\", $n/1000000}\")M\"; elif [ \"$n\" -ge 1000 ]; then echo \"$(awk \"BEGIN{printf \\\"%.0f\\\", $n/1000}\")k\"; else echo \"$n\"; fi; }; input=$(cat); m=$(echo \"$input\" | jq -r '.model.display_name // empty'); u=$(echo \"$input\" | jq -r '.context_window.current_usage.input_tokens // 0'); n=$(echo \"$input\" | jq -r '.context_window.context_window_size // 0'); c=$(echo \"$input\" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0'); e=$(echo \"$input\" | jq -r '.effort.level // empty'); [ \"$u\" -gt 0 ] && [ \"$n\" -gt 0 ] && ctx=\"$(fmt $u)/$(fmt $n)\" || ctx=\"0/$(fmt $n)\"; [ \"$c\" -gt 0 ] && [ \"$u\" -gt 0 ] && h=$(awk \"BEGIN{printf \\\"%.2f\\\", $c*100/$u}\") && ch=\" cache:${h}%\" || ch=\"\"; [ -n \"$e\" ] && eo=\" effort:$e\" || eo=\"\"; echo \"${m} | ${ctx}${ch}${eo}\""
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
+    "claude-md-management@claude-plugins-official": false,
+    "rust-analyzer-lsp@claude-plugins-official": false,
+    "superpowers@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/anthropics/claude-plugins-official.git"
+      }
+    }
+  },
+  "effortLevel": "xhigh",
+  "skipDangerousModePermissionPrompt": true,
+  "model": "deepseek-v4-pro[1m]"
+}

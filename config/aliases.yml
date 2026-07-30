@@ -1,0 +1,28 @@
+# JUCE symbol aliases for improved search.
+# Format:
+#   qualified.symbol.name:
+#     aliases: [shortcut1, shortcut2]
+#     concepts: [concept1, concept2]
+#
+# Aliases that reference non-existent symbols will cause build failure.
+
+juce::AudioProcessorValueTreeState:
+  aliases:
+    - APVTS
+    - plugin parameter state
+    - parameter state
+  concepts:
+    - save plugin parameter state
+    - restore plugin parameter state
+
+juce::SmoothedValue:
+  aliases:
+    - parameter smoothing
+  concepts:
+    - smooth parameter changes
+    - avoid parameter zipper noise
+
+juce::dsp::ProcessorChain:
+  aliases:
+    - DSP chain
+    - processor pipeline

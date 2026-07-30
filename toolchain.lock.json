@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "python": {
+    "minimum": "3.12"
+  },
+  "doxygen": {
+    "version": "1.9.5"
+  },
+  "generator": {
+    "version": "0.1.0"
+  },
+  "schemas": {
+    "ir": 1,
+    "markdown": 1,
+    "index": 1,
+    "progress": 1
+  }
+}
