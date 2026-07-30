@@ -248,7 +248,10 @@ def _validate_links(root: Path) -> list[ValidationIssue]:
             # Strip leading ./ — resolve from reference root
             clean_file_part = file_part.lstrip("./")
             # For ./reference/... paths, resolve from root
-            target = root / clean_file_part if file_part.startswith("./") else (md_file.parent / clean_file_part).resolve()
+            target = (
+                root / clean_file_part if file_part.startswith("./")
+                else (md_file.parent / clean_file_part).resolve()
+            )
             try:
                 target_rel = target.relative_to(root).as_posix()
             except ValueError:

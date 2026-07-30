@@ -74,6 +74,9 @@ def render_compound(
     if target is None:
         raise ValueError(f"No path target for compound {compound.refid}")
 
+    global _current_doc_path
+    _current_doc_path = target.path
+
     lines: list[str] = []
     symbols: list[str] = [compound.qualified_name]
     anchors: list[str] = []
@@ -155,7 +158,7 @@ def render_compound(
             for member in section_members:
                 mt = path_map.members.get(member.refid)
                 anchor = mt.anchor if mt else ""
-                anchor_link = f"#({anchor})" if anchor else ""
+                anchor_link = f"#{anchor}" if anchor else ""
                 brief_text = _brief_to_text(member.brief)
                 lines.append(
                     f"| [{member.name}]({anchor_link}) "
@@ -444,13 +447,17 @@ def _render_member_detail(member: Member, path_map: PathMap) -> list[str]:
 _current_path: str | None = None  # module-level context for relative links
 
 
+# Module-level context set by render_compound for relative link computation.
+_current_doc_path: str = ""
+
+
 def _relative_link(
     target_path: str, path_map: PathMap, current_refid: str | None,
     current_path: str = "",
 ) -> str:
     """Compute a relative POSIX link from one output file to another."""
     import os.path
-    from_path = current_path
+    from_path = current_path or _current_doc_path
     if not from_path and current_refid:
         ct = path_map.compounds.get(current_refid)
         if ct is not None:
@@ -467,11 +474,10 @@ def _ref_to_link(ref: Reference, path_map: PathMap) -> str | None:
     """Convert a ``Reference`` to a Markdown link path, if resolvable."""
     if ref.refid is None:
         return None
-    target = path_map.compounds.get(ref.refid)
-    if target is None:
-        target = path_map.members.get(ref.refid)
+    target = path_map.compounds.get(ref.refid) or path_map.members.get(ref.refid)
     if target is None:
         return None
+    return _relative_link(target.path, path_map, None)
     return f"./{target.path}"
 
 
