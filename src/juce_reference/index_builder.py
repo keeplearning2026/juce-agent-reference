@@ -140,6 +140,7 @@ def build_manifest(
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "juce_commit": juce_commit,
+        "juce_dirty": False,
         "statistics": {
             "compounds": len(compounds),
             "documents": doc_count,

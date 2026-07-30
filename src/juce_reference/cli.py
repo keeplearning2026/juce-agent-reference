@@ -426,8 +426,11 @@ def cmd_rebuild_index(
         typer.echo("symbols.jsonl not found", err=True)
         raise typer.Exit(code=7)
     db_path = ref_root / "index" / "search.sqlite"
+    from juce_reference.alias_loader import load_aliases
     from juce_reference.search import build_search_db
-    count = build_search_db(symbols_path, db_path)
+    aliases_path = _repo_root / "config" / "aliases.yml"
+    alias_cfg = load_aliases(aliases_path, frozenset()) if aliases_path.is_file() else None
+    count = build_search_db(symbols_path, db_path, alias_config=alias_cfg)
     typer.echo(f"Rebuilt search index: {count} symbols")
 
 
@@ -471,16 +474,29 @@ def cmd_determinism(
     )
     out1 = Path(output).resolve() / ".determinism_run1"
     out2 = Path(output).resolve() / ".determinism_run2"
-
     cfg1 = GeneratorConfig(juce_root=cfg.juce_root, output_root=out1)
-    generate(cfg1)
-
     cfg2 = GeneratorConfig(juce_root=cfg.juce_root, output_root=out2)
-    generate(cfg2)
-
-    from juce_reference.determinism import compare_generations
-    result = compare_generations(out1, out2)
-    typer.echo(_json.dumps(result, indent=2, ensure_ascii=False))
+    try:
+        stats_a = generate(cfg1)
+        stats_b = generate(cfg2)
+        from juce_reference.determinism import compare_generations, compare_sqlite_logical
+        cand_a = Path(stats_a["candidate_path"])
+        cand_b = Path(stats_b["candidate_path"])
+        result = compare_generations(cand_a, cand_b)
+        if not result["passed"] or result.get("files_compared", 0) == 0:
+            typer.echo(_json.dumps(result, indent=2, ensure_ascii=False), err=True)
+            raise typer.Exit(code=12)
+        sqla = cand_a / "index" / "search.sqlite"
+        sqlb = cand_b / "index" / "search.sqlite"
+        if sqla.is_file() and sqlb.is_file():
+            sql_cmp = compare_sqlite_logical(sqla, sqlb)
+            if not sql_cmp["passed"]:
+                typer.echo(_json.dumps(sql_cmp, indent=2), err=True)
+                raise typer.Exit(code=12)
+        typer.echo(_json.dumps(result, indent=2, ensure_ascii=False))
+    finally:
+        shutil.rmtree(out1, ignore_errors=True)
+        shutil.rmtree(out2, ignore_errors=True)
 
 
 # ==================================================================
@@ -571,6 +587,7 @@ def cmd_all(
     cfg = GeneratorConfig(
         juce_root=juce, output_root=out,
         aliases_file=_repo_root / "config" / "aliases.yml",
+        release=True,
     )
     try:
         stats = generate(cfg)

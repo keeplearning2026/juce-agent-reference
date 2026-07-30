@@ -80,18 +80,22 @@ def scan_examples(examples_root: Path) -> list[ExampleInfo]:
         cat_name = cat_dir.name
         category = _CATEGORY_MAP.get(cat_name, "other")
 
-        for ex_dir in sorted(cat_dir.iterdir()):
-            if not ex_dir.is_dir():
-                continue
-            ex_name = ex_dir.name
-            files = _collect_files_recursive(ex_dir, examples_root)
-            if files:
+        for entry in sorted(cat_dir.iterdir()):
+            if entry.is_dir():
+                ex_name = entry.name
+                files = _collect_files_recursive(entry, examples_root)
+                if files:
+                    examples.append(ExampleInfo(
+                        name=ex_name, category=category,
+                        directory=str(entry.relative_to(examples_root)),
+                        files=tuple(sorted(files))))
+            elif entry.is_file() and entry.suffix.lower() in _SCAN_EXTENSIONS:
+                ex_name = entry.stem
+                files = [str(entry.relative_to(examples_root))]
                 examples.append(ExampleInfo(
-                    name=ex_name,
-                    category=category,
-                    directory=str(ex_dir.relative_to(examples_root)),
-                    files=tuple(sorted(files)),
-                ))
+                    name=ex_name, category=category,
+                    directory=str(examples_root),
+                    files=tuple(files)))
 
     examples.sort(key=lambda e: (e.category, e.name))
     return examples

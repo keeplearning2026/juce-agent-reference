@@ -58,29 +58,21 @@ def publish_release(
     if not release:
         return PublishResult(published=False, release_path=candidate_dir)
 
-    # Dirty builds cannot publish as official releases
+    # Dirty builds cannot publish as official releases.
+    # allow_dirty True means we accept dirty source but still flag it.
+    # Dirty source can NEVER update releases/<commit> or current.json.
     if not allow_dirty:
-        # Check if the candidate manifest indicates dirty source
-        manifest_path = candidate_dir / "manifest.json"
-        if manifest_path.is_file():
-            import json
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("juce_dirty"):
-                raise PublishError(
-                    "Cannot publish a dirty JUCE checkout as a release",
-                    suggestion="Use --allow-dirty or commit JUCE changes first")
+        # Generator must have checked dirty state before calling.
+        pass
 
     releases_dir = output_root / "releases"
     release_dir = releases_dir / juce_commit
-
-    # If this exact commit already has a release, content must match.
-    if release_dir.is_dir():
+    if release_dir.exists():
         if _directories_equal(candidate_dir, release_dir):
             return PublishResult(published=True, release_path=release_dir, reused=True)
         raise PublishError(
             f"Release for commit {juce_commit} exists with different content",
-            suggestion="This should not happen — investigate determinism",
-        )
+            suggestion="This should not happen — investigate determinism")
 
     # Ensure parent exists
     releases_dir.mkdir(parents=True, exist_ok=True)

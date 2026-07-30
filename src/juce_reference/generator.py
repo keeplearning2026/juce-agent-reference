@@ -179,7 +179,7 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
                     alias_config=alias_config)
 
     # ---- 12. Write docs.lock.json ----
-    _write_docs_lock(candidate_dir, juce_source.commit)
+    _write_docs_lock(candidate_dir, juce_source.commit, juce_source.dirty)
 
     # ---- 13. Write manifest.json ----
     build_manifest(compounds, doc_count, symbol_count, example_count,
@@ -247,8 +247,9 @@ def _write_generation_report(reports_dir: Path, stats: dict[str, Any]) -> None:
 
 # ---- docs.lock.json builder ----
 
-def _write_docs_lock(output_dir: Path, commit: str) -> None:
+def _write_docs_lock(output_dir: Path, commit: str, dirty: bool) -> None:
     import subprocess
+    import sys
 
     from juce_reference import __version__ as gen_ver
 
@@ -259,13 +260,11 @@ def _write_docs_lock(output_dir: Path, commit: str) -> None:
     except Exception:
         pass
 
-    # Python version from runtime
-    import sys
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
     lock = {
         "schema_version": 1,
-        "juce": {"commit": commit, "dirty": False},
+        "juce": {"commit": commit, "dirty": dirty},
         "toolchain": {"python": py_ver, "doxygen": doxy_ver, "generator": gen_ver},
         "schemas": {"ir": 1, "markdown": 1, "index": 1},
     }
