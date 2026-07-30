@@ -444,15 +444,22 @@ def _render_member_detail(member: Member, path_map: PathMap) -> list[str]:
 _current_path: str | None = None  # module-level context for relative links
 
 
-def _relative_link(target_path: str, path_map: PathMap, current_refid: str | None) -> str:
-    """Compute a relative POSIX link from one output file to another.
-
-    For simplicity in V1, we always use a path relative to the output root.
-    """
-    # Compute relative path from a reference/ directory.
-    # target_path is like "reference/types/juce/AudioProcessor.md"
-    # We need a link like "../types/juce/AudioProcessor.md" from another reference/ dir
-    return f"./{target_path}"  # root-relative for deterministic linking
+def _relative_link(
+    target_path: str, path_map: PathMap, current_refid: str | None,
+    current_path: str = "",
+) -> str:
+    """Compute a relative POSIX link from one output file to another."""
+    import os.path
+    from_path = current_path if current_path else (
+        path_map.compounds.get(current_refid or "", "").path
+        if current_refid and current_refid in path_map.compounds else ""
+    )
+    if from_path and os.path.dirname(from_path):
+        try:
+            return os.path.relpath(target_path, os.path.dirname(from_path)).replace("\\", "/")
+        except ValueError:
+            pass
+    return f"./{target_path}"
 
 
 def _ref_to_link(ref: Reference, path_map: PathMap) -> str | None:

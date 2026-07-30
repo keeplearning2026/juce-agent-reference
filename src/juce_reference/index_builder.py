@@ -17,19 +17,16 @@ from typing import Any
 from juce_reference.model import Compound, SourceLocation
 
 
-def build_symbols_tsv(compounds: list[Compound], output_path: Path) -> int:
-    """Write ``symbols.tsv`` with deterministic column order.
-
-    Columns: qualified_name, short_name, owner, kind, access, module,
-             documentation_path, anchor, signature, documented, brief
-
-    Returns the number of symbol rows written.
-    """
+def build_symbols_tsv(
+    compounds: list[Compound],
+    output_path: Path,
+    path_info: dict[str, str] | None = None,
+) -> int:
+    if path_info is None:
+        path_info = _default_paths(compounds)
     rows: list[list[str]] = []
-    _collect_symbol_rows(compounds, rows)
-
+    _collect_symbol_rows(compounds, rows, path_info)
     rows.sort(key=lambda r: (r[0].casefold(), r[3], r[8], r[6], r[7]))
-
     with output_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
         writer.writerow([
@@ -39,18 +36,18 @@ def build_symbols_tsv(compounds: list[Compound], output_path: Path) -> int:
         ])
         for row in rows:
             writer.writerow(row)
-
     return len(rows)
 
 
-def build_symbols_jsonl(compounds: list[Compound], output_path: Path) -> int:
-    """Write ``symbols.jsonl`` with fixed key order per line.
-
-    Returns the number of lines written.
-    """
+def build_symbols_jsonl(
+    compounds: list[Compound],
+    output_path: Path,
+    path_info: dict[str, str] | None = None,
+) -> int:
+    if path_info is None:
+        path_info = _default_paths(compounds)
     records: list[dict[str, Any]] = []
-    _collect_symbol_records(compounds, records)
-
+    _collect_symbol_records(compounds, records, path_info)
     records.sort(key=lambda r: (
         str(r.get("symbol", "")).casefold(),
         str(r.get("kind", "")),
@@ -58,7 +55,6 @@ def build_symbols_jsonl(compounds: list[Compound], output_path: Path) -> int:
         str(r.get("documentation_path", "")),
         str(r.get("anchor", "")),
     ))
-
     with output_path.open("w", encoding="utf-8") as fh:
         for rec in records:
             fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
@@ -163,6 +159,13 @@ def build_manifest(
 # -- Internal helpers ---------------------------------------------------------
 
 
+def _default_paths(compounds: list[Compound]) -> dict[str, str]:
+    """Compute refid → output path mapping matching PathMap and path_mapper."""
+    from juce_reference.path_mapper import build_path_map
+    pm = build_path_map(compounds)
+    return {t.refid: t.path for t in pm.compounds.values()}
+
+
 def _short_name(full: str) -> str:
     return full.rsplit("::", maxsplit=1)[-1]
 
@@ -180,30 +183,33 @@ def _brief_text(brief: tuple[object, ...]) -> str:
     return " ".join(parts)[:200]
 
 
-def _collect_symbol_rows(compounds: list[Compound], rows: list[list[str]]) -> None:
+def _collect_symbol_rows(
+    compounds: list[Compound], rows: list[list[str]], path_info: dict[str, str],
+) -> None:
     for c in compounds:
+        c_path = path_info.get(c.refid, "")
         owner = "::".join(c.qualified_name.split("::")[:-1]) if "::" in c.qualified_name else ""
         rows.append([
             c.qualified_name, _short_name(c.qualified_name), owner,
-            c.kind, "", c.module or "",
-            f"reference/types/{c.name.replace('::', '/')}.md",
+            c.kind, "", c.module or "", c_path,
             "", "", str(c.documented).lower(), _brief_text(c.brief),
         ])
         for m in c.members:
             rows.append([
                 m.qualified_name, m.name, c.qualified_name,
-                m.kind, m.access, c.module or "",
-                f"reference/types/{c.name.replace('::', '/')}.md",
+                m.kind, m.access, c.module or "", c_path,
                 f"m-{_hash10(m.refid)}",
                 m.signature, str(m.documented).lower(), _brief_text(m.brief),
             ])
 
 
-def _collect_symbol_records(compounds: list[Compound], records: list[dict[str, Any]]) -> None:
+def _collect_symbol_records(
+    compounds: list[Compound], records: list[dict[str, Any]], path_info: dict[str, str],
+) -> None:
     for c in compounds:
+        c_path = path_info.get(c.refid, "")
         records.append(_symbol_record(c.qualified_name, _short_name(c.qualified_name),
-                                       "", c.kind, "", c.module or "",
-                                       f"reference/types/{c.name.replace('::', '/')}.md",
+                                       "", c.kind, "", c.module or "", c_path,
                                        "", "", c.documented, _brief_text(c.brief)))
         for m in c.members:
             records.append(_symbol_record(

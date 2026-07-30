@@ -158,8 +158,9 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
     # ---- 10. Build symbol indexes ----
     index_dir = candidate_dir / "index"
     index_dir.mkdir(parents=True, exist_ok=True)
-    symbol_count = build_symbols_tsv(compounds, index_dir / "symbols.tsv")
-    build_symbols_jsonl(compounds, index_dir / "symbols.jsonl")
+    path_info = {t.refid: t.path for t in path_map.compounds.values()}
+    symbol_count = build_symbols_tsv(compounds, index_dir / "symbols.tsv", path_info)
+    build_symbols_jsonl(compounds, index_dir / "symbols.jsonl", path_info)
     build_relationships_jsonl(compounds, index_dir / "relationships.jsonl")
     build_source_locations_jsonl(compounds, index_dir / "source-locations.jsonl")
 

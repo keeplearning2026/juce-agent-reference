@@ -62,28 +62,35 @@ from juce_reference.model import (
 
 KNOWN_SEMANTIC: frozenset[str] = frozenset({
     "para", "simplesect", "xrefsect",
-    "sect1", "sect2", "sect3", "sect4",
+    "sect1", "sect2", "sect3", "sect4", "sect5", "sect6",
     "itemizedlist", "orderedlist", "table",
     "programlisting", "parameterlist", "verbatim",
     "image", "blockquote", "title", "heading",
     "highlight", "codeline", "sp",
     "ref", "ulink", "bold", "emphasis", "computeroutput",
     "formula", "linebreak", "hruler",
-    "ndash", "mdash", "nonbreakablespace",
+    "ndash", "mdash", "nonbreakablespace", "zwj",
     "superscript", "subscript",
     "compounddef", "compoundname", "basecompoundref", "derivedcompoundref",
     "innerclass", "innernamespace", "location", "ingroup",
     "sectiondef", "memberdef", "name", "qualifiedname", "type",
     "definition", "argsstring", "param", "templateparamlist",
     "enumvalue", "briefdescription", "detaileddescription",
+    "anchor", "variablelist", "varlistentry", "listitem", "term",
+    "internal",
 })
 
 KNOWN_PRESENTATIONAL: frozenset[str] = frozenset({
     "center", "small", "strike", "preformatted",
+    "htmlonly", "latexonly", "xmlonly", "manonly",
+    "docbookonly", "rtfonly",
+    "copy", "toc", "dot", "dotfile", "plantuml",
 })
 
 BLOCK_PASSTHROUGH: frozenset[str] = frozenset({
     "doxygen", "compounddef",
+    "incdepgraph", "invincdepgraph", "inheritancegraph",
+    "collaborationgraph", "listofallmembers",
 })
 
 _warnings: list[dict[str, Any]] = []
@@ -331,9 +338,11 @@ def _parse_doc_element(elem: etree._Element) -> DocNode | list[DocNode] | None:
             current_inline.append(Text(elem.text.strip()))
         for child in elem:
             ctag = child.tag
-            if ctag in ("simplesect", "xrefsect", "sect1", "sect2", "sect3", "sect4",
+            if ctag in ("simplesect", "xrefsect",
+                        "sect1", "sect2", "sect3", "sect4", "sect5", "sect6",
                         "itemizedlist", "orderedlist", "table", "programlisting",
-                        "parameterlist", "verbatim", "image", "blockquote"):
+                        "parameterlist", "verbatim", "image", "blockquote",
+                        "heading", "variablelist"):
                 if current_inline:
                     inline_elements.append(Paragraph(children=tuple(current_inline)))
                     current_inline = []
@@ -372,6 +381,8 @@ def _parse_doc_element(elem: etree._Element) -> DocNode | list[DocNode] | None:
             return Paragraph(children=(Text("Precondition: "), *children))
         if skind == "post":
             return Paragraph(children=(Text("Postcondition: "), *children))
+        if skind == "par":
+            return Paragraph(children=children)
         return Paragraph(children=children)
 
     if tag == "xrefsect":
@@ -386,7 +397,7 @@ def _parse_doc_element(elem: etree._Element) -> DocNode | list[DocNode] | None:
                 Bold(children=(Text(f"{label}: "),)), *children)),))
         return None
 
-    if tag in ("sect1", "sect2", "sect3", "sect4"):
+    if tag in ("sect1", "sect2", "sect3", "sect4", "sect5", "sect6"):
         level = int(tag[-1])
         sect_title: tuple[DocNode, ...] = (
             tuple(_parse_inline_children(elem.find("title")))
@@ -396,6 +407,27 @@ def _parse_doc_element(elem: etree._Element) -> DocNode | list[DocNode] | None:
 
     if tag == "title":
         return DocTitle(children=tuple(_parse_inline_children(elem)))
+
+    if tag == "heading":
+        # @heading in Doxygen pages — render as section
+        return Section(level=2, title=(Text("".join(itertext(elem))),), children=())
+
+    if tag == "anchor":
+        # <anchor id="..."/> — pass through, anchor ids come from refids
+        return None
+
+    if tag == "variablelist":
+        # Definition list: <varlistentry><term>X</term>...listitem desc...</varlistentry>
+        items: list[DocNode] = []
+        for ve in elem.iterfind("varlistentry"):
+            term = (ve.findtext("term") or "").strip()
+            desc = _parse_doc_children(ve.find("listitem"), default=())
+            items.append(Paragraph(children=(
+                Bold(children=(Text(term if term else ""),)),
+                Text(" — "),
+                *desc,
+            )))
+        return Paragraph(children=tuple(items))
 
     if tag == "itemizedlist":
         list_items: list[DocNode] = []
@@ -460,9 +492,22 @@ def _parse_doc_element(elem: etree._Element) -> DocNode | list[DocNode] | None:
     if tag == "hruler":
         return Text("\n---\n")
 
+    if tag == "internal":
+        # <internal> section within compounddef — skip with reason
+        return None
+
+    if tag == "zwj":
+        # Zero-width joiner — skip (presentational)
+        return None
+
     if tag == "blockquote":
         children = _parse_doc_children(elem, default=())
         return Paragraph(children=(Text("> "), *children))
+
+    if tag in ("incdepgraph", "invincdepgraph", "inheritancegraph",
+               "collaborationgraph", "listofallmembers"):
+        # Graph / listing blocks — skip (no content to extract)
+        return None
 
     if tag == "ref":
         refid = elem.get("refid")
@@ -536,6 +581,8 @@ def _parse_inline_element(elem: etree._Element) -> list[DocNode]:
         return [Text("^(" + "".join(itertext(elem)) + ")")]
     if tag == "subscript":
         return [Text("_(" + "".join(itertext(elem)) + ")")]
+    if tag == "zwj":
+        return []  # zero-width joiner — no visible output
     return _parse_inline_fallback(elem)
 
 

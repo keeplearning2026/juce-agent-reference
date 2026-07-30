@@ -182,18 +182,16 @@ def _validate_indexes(root: Path) -> list[ValidationIssue]:
                         path=doc_path,
                     ))
 
-    # Check source-locations.jsonl
+    # Check source-locations.jsonl — source files live in JUCE checkout
     sl_path = index_dir / "source-locations.jsonl"
     if sl_path.is_file():
         for rec in json_lines(sl_path):
             file_path = rec.get("file", "")
-            if file_path and not (root / file_path).is_file():
+            if not file_path:
                 issues.append(ValidationIssue(
-                    severity="warning",  # source files may be external
-                    code="source-file-not-in-output",
-                    message=f"Source file not in output: {file_path}",
-                    path=file_path,
-                ))
+                    severity="error", code="empty-source-path",
+                    message=f"Empty source path for {rec.get('symbol', '?')}",
+                    symbol=rec.get("symbol")))
 
     return issues
 
@@ -203,18 +201,21 @@ def _validate_links(root: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     # Build an anchor index per file.
     anchor_index: dict[str, set[str]] = {}
+    import re
     for md_file in root.rglob("*.md"):
-        rel = md_file.relative_to(root).as_posix()
+        rel_path_key = md_file.relative_to(root).as_posix()
         content = md_file.read_text(encoding="utf-8", errors="replace")
-        anchor_index[rel] = set()
-        # Collect explicit <a id="..."> anchors
-        import re
+        anchors_set: set[str] = set()
+        # Collect explicit <a id="..."> anchors (including m-<sha> member anchors)
         for m in re.finditer(r'<a\s+id="([^"]+)"', content):
-            anchor_index[rel].add(m.group(1))
-        # Collect headings as implicit anchors
+            anchors_set.add(m.group(1))
+        # Member details often link to m-<sha> via anchor: #m-<sha> pattern
+        # These are explicit anchors already collected above.
+        # Collect headings as implicit slugs (secondary match)
         for m in re.finditer(r'^#{1,6}\s+(.+)$', content, re.MULTILINE):
             slug = re.sub(r'[^a-z0-9-]', '', m.group(1).strip().lower().replace(' ', '-'))
-            anchor_index[rel].add(slug)
+            anchors_set.add(slug)
+        anchor_index[rel_path_key] = anchors_set
 
     for md_file in root.rglob("*.md"):
         rel = md_file.relative_to(root).as_posix()
