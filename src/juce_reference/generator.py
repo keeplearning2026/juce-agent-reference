@@ -202,6 +202,19 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         "errors": validation.statistics.get("errors", 0),
         "warnings": validation.statistics.get("warnings", 0),
     }
+    # Write validation report
+    (reports_dir / "validation.json").write_text(
+        _json.dumps({
+            "passed": validation.passed,
+            "statistics": validation.statistics,
+            "issues": [
+                {"severity": i.severity, "code": i.code,
+                 "message": i.message, "path": i.path, "symbol": i.symbol}
+                for i in validation.issues[:500]
+            ],
+        }, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     if not validation.passed:
         raise GenerationError(
             f"Output validation failed with "

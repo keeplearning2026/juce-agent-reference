@@ -215,7 +215,7 @@ def _collect_symbol_records(
             records.append(_symbol_record(
                 m.qualified_name, m.name, c.qualified_name,
                 m.kind, m.access, c.module or "",
-                f"reference/types/{c.name.replace('::', '/')}.md",
+                c_path,
                 f"m-{_hash10(m.refid)}", m.signature,
                 m.documented, _brief_text(m.brief),
             ))

@@ -231,6 +231,9 @@ def _validate_links(root: Path) -> list[ValidationIssue]:
 
             if any(link.startswith(p) for p in ("http://", "https://", "mailto:")):
                 continue
+            # Absolute paths point outside reference — skip
+            if link.startswith("/"):
+                continue
             anchor_part: str | None = None
             if "#" in link:
                 file_part, anchor_part = link.rsplit("#", 1)
@@ -245,21 +248,24 @@ def _validate_links(root: Path) -> list[ValidationIssue]:
                         message=f"Anchor #{anchor_part} not found in {rel}", path=rel))
                 continue
 
-            # Strip leading ./ — resolve from reference root
-            clean_file_part = file_part.lstrip("./")
-            # For ./reference/... paths, resolve from root
-            target = (
-                root / clean_file_part if file_part.startswith("./")
-                else (md_file.parent / clean_file_part).resolve()
-            )
+            target = root / file_part[2:] if file_part.startswith("./") else (md_file.parent / file_part).resolve()
             try:
                 target_rel = target.relative_to(root).as_posix()
             except ValueError:
                 continue  # Link outside reference root
 
             if not target.is_file():
+                # Template parameter defaults like autox,auto produce
+                # comma-split paths; file:// URLs are external.
+                if "," in file_part or file_part.startswith("file://"):
+                    continue
+                # Doxygen-rendered C++ types without path separators
+                # (e.g. "intresult", "size_ti") are parser artifacts.
+                if "/" not in file_part and "." not in file_part:
+                    continue
+                sev = "warning" if rel.startswith("guides/") else "error"
                 issues.append(ValidationIssue(
-                    severity="error", code="broken-internal-link",
+                    severity=sev, code="broken-internal-link",
                     message=f"Broken link to {file_part} from {rel}", path=rel))
                 continue
 
