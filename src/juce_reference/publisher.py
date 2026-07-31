@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +93,17 @@ def publish_release(
 
     # Update current.json atomically.
     _write_current(output_root, juce_commit)
+
+    # Update (or create) the "current" junction so agents can use a
+    # stable short path:  <output_root>/current/reference/types/...
+    current_link = output_root / "current"
+    if current_link.exists():
+        subprocess.run(["cmd", "/c", "rmdir", str(current_link)],
+                       capture_output=True)
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(current_link), str(release_dir)],
+        capture_output=True,
+    )
 
     return PublishResult(published=True, release_path=release_dir)
 

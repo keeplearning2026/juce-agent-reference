@@ -9,3 +9,6 @@ __pycache__/
 .coverage
 htmlcov/
 .agent/blocker.json
+JUCE/
+juce-reference/
+juce-reference/current/

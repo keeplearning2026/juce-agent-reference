@@ -20,13 +20,13 @@ examples, and source locations.
 
 ```powershell
 # Check your environment
-juce-doc doctor --juce-root D:\SDK\JUCE
+juce-doc doctor --juce-root D:\project\juce_doc\JUCE
 
 # Generate the reference
-juce-doc generate --juce-root D:\SDK\JUCE --output D:\project\juce-reference
+juce-doc generate --juce-root D:\project\juce_doc\JUCE --output D:\project\juce_doc\juce-reference
 
 # Run the full verification pipeline
-juce-doc all --juce-root D:\SDK\JUCE --output D:\project\juce-reference
+juce-doc all --juce-root D:\project\juce_doc\JUCE --output D:\project\juce_doc\juce-reference
 ```
 
 ## Commands

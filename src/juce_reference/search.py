@@ -35,6 +35,7 @@ def build_search_db(
     symbols_path: Path,
     output_path: Path,
     alias_config: AliasConfig | None = None,
+    reference_root: Path | None = None,
 ) -> int:
     """Build a SQLite FTS5 search database from symbols.jsonl.
 
@@ -42,6 +43,10 @@ def build_search_db(
         symbols_path: Path to ``symbols.jsonl``.
         output_path: Path for the ``search.sqlite`` output.
         alias_config: Optional alias config for enriched search.
+        reference_root: Root of the generated reference (contains
+            ``reference/``, ``examples/``, etc.).  When provided, the
+            full Markdown body text (without frontmatter) is indexed
+            alongside each symbol for full-content search.
 
     Returns:
         Number of symbols indexed.
@@ -72,15 +77,19 @@ def build_search_db(
         )
     """)
 
-    # FTS table
+    # FTS table — ``body`` holds the stripped Markdown content for
+    # full-text search across API documentation and guide pages.
     conn.execute("""
         CREATE VIRTUAL TABLE symbol_fts USING fts5(
             symbol, short_name, aliases, concepts, kind, module,
-            signature, brief, documentation_path, anchor
+            signature, brief, body, documentation_path, anchor
         )
     """)
 
     alias_config = alias_config or AliasConfig(symbols={}, alias_to_symbol={})
+
+    # Cache: read each unique doc once — many symbols share the same page.
+    body_cache: dict[str, str] = {}
 
     for idx, sym in enumerate(symbols):
         symbol = sym.get("symbol", "")
@@ -92,22 +101,31 @@ def build_search_db(
         all_aliases = " ".join(manual_aliases + auto_aliases)
         all_concepts = " ".join(concepts)
 
+        doc_path = sym.get("documentation_path", "")
+
+        # Resolve and cache body text for this symbol's documentation page.
+        body = ""
+        if reference_root and doc_path:
+            if doc_path not in body_cache:
+                body_cache[doc_path] = _read_body(reference_root / doc_path)
+            body = body_cache[doc_path]
+
         conn.execute(
             "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 idx + 1, symbol, short_name, sym.get("kind"),
                 sym.get("access", ""), sym.get("module"),
-                sym.get("documentation_path"), sym.get("anchor"),
+                doc_path, sym.get("anchor"),
                 sym.get("signature"),
                 1 if sym.get("documented") else 0, sym.get("brief"),
             ),
         )
         conn.execute(
-            "INSERT INTO symbol_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO symbol_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 symbol, short_name, all_aliases, all_concepts,
                 sym.get("kind"), sym.get("module"), sym.get("signature"),
-                sym.get("brief"), sym.get("documentation_path"),
+                sym.get("brief"), body, doc_path,
                 sym.get("anchor"),
             ),
         )
@@ -115,6 +133,21 @@ def build_search_db(
     conn.commit()
     conn.close()
     return len(symbols)
+
+
+def _read_body(md_path: Path) -> str:
+    """Read a Markdown file and return its body text without frontmatter.
+
+    Returns an empty string when the file is missing or unreadable.
+    """
+    from juce_reference.util.markdown import split_frontmatter
+
+    try:
+        text = md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    _, body = split_frontmatter(text)
+    return body
 
 
 def search_symbol(

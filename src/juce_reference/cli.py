@@ -7,10 +7,11 @@ business logic — no placeholder "not yet implemented" stubs remain.
 from __future__ import annotations
 
 import json as _json
+import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -50,6 +51,93 @@ _Verbose = Annotated[bool, typer.Option("--verbose", "-v")]
 _NoColor = Annotated[bool, typer.Option("--no-color")]
 
 _repo_root = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_reference(raw: str | None) -> Path:
+    """Resolve ``--reference`` to a directory that contains ``index/search.sqlite``.
+
+    1. If the path already contains ``index/search.sqlite``, return it as-is.
+    2. If the path contains ``current.json``, follow it into ``releases/<commit>``.
+    3. If the path contains a ``releases/`` child dir, pick the newest by mtime.
+    4. Otherwise return the path unchanged (caller will report the missing file).
+    """
+    if raw is None:
+        raise typer.Exit(code=2)
+
+    path = Path(raw).resolve()
+
+    if (path / "index" / "search.sqlite").is_file():
+        return path
+
+    current_json = path / "current.json"
+    if current_json.is_file():
+        try:
+            data: dict[str, str] = _json.loads(current_json.read_text(encoding="utf-8"))
+            rel: str = data.get("path", "")
+            resolved: Path = path / rel
+            if (resolved / "index" / "search.sqlite").is_file():
+                return resolved
+        except (KeyError, ValueError, OSError):
+            pass
+
+    releases_dir = path / "releases"
+    if releases_dir.is_dir():
+        dirs = sorted(
+            [d for d in releases_dir.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime, reverse=True,
+        )
+        if dirs:
+            return dirs[0]
+
+    return path
+
+
+def _enrich(result: dict[str, Any], ref_root: Path) -> dict[str, Any]:
+    """Add ``absolute_path`` with forward slashes, using the canonical
+    ``JUCE_REFERENCE/current/``-based path when available.
+
+    Removes redundant fields (short_name, owner, documented, access) from
+    output to keep JSON response lean for agents.
+    """
+    # Use current/ symlink path when available: shorter, no commit hash.
+    juce_ref = os.environ.get("JUCE_REFERENCE")
+    base = Path(juce_ref).resolve() if juce_ref else ref_root
+    current = base / "current"
+    if current.is_dir():
+        base = current
+
+    doc_path = result.pop("documentation_path", "") or result.pop("path", "")
+    if doc_path:
+        result["absolute_path"] = (base / doc_path).as_posix()
+
+    # Source-file paths (relative to JUCE checkout, not reference root).
+    juce_root = _resolve_juce_root()
+    for key in ("file", "body_file"):
+        src = result.get(key, "")
+        if src and juce_root:
+            result[f"absolute_{key}"] = (juce_root / src).as_posix()
+
+    # Remove internal fields agents don't need.
+    for field in (
+        "short_name", "owner", "documented", "access",
+        "documentation_path", "path",
+        "file", "body_file",
+        "refid", "column",
+        "source_refid", "target_refid",
+    ):
+        result.pop(field, None)
+
+    return result
+
+
+def _resolve_juce_root() -> Path | None:
+    """Return the JUCE checkout root from JUCE_ROOT env var."""
+    env = os.environ.get("JUCE_ROOT")
+    if env:
+        p = Path(env).resolve()
+        if p.is_dir():
+            return p
+    return None
 
 
 # ==================================================================
@@ -96,7 +184,37 @@ def cmd_doctor(
 
 
 # ==================================================================
-# generate
+# setup
+# ==================================================================
+@app.command("setup")
+def cmd_setup(
+    juce_root: _JuceRoot = None,
+    reference: _Reference = None,
+) -> None:
+    """Persist JUCE_ROOT and JUCE_REFERENCE env vars for future sessions.
+
+    Usage: juce-doc setup --juce-root <path> --reference <path>
+    """
+    if juce_root is None or reference is None:
+        typer.echo("Usage: juce-doc setup --juce-root <path> --reference <path>",
+                   err=True)
+        raise typer.Exit(code=2)
+
+    juce = str(Path(juce_root).resolve())
+    ref = str(Path(reference).resolve())
+
+    # Persist to user env (survives reboots, no admin needed).
+    subprocess.run(["setx", "JUCE_ROOT", juce], capture_output=True)
+    subprocess.run(["setx", "JUCE_REFERENCE", ref], capture_output=True)
+
+    typer.echo(f"JUCE_ROOT      = {juce}")
+    typer.echo(f"JUCE_REFERENCE  = {ref}")
+    typer.echo("")
+    typer.echo("Env vars persisted for future sessions.")
+    typer.echo("Restart your terminal or run:")
+    typer.echo(f'  $env:JUCE_ROOT = "{juce}"')
+    typer.echo(f'  $env:JUCE_REFERENCE = "{ref}"')
+
 # ==================================================================
 @app.command("generate")
 def cmd_generate(
@@ -136,7 +254,7 @@ def cmd_validate(
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
         raise typer.Exit(code=2)
-    root = Path(reference).resolve()
+    root = _resolve_reference(reference)
     if not root.is_dir():
         typer.echo(f"Reference directory not found: {root}", err=True)
         raise typer.Exit(code=2)
@@ -163,7 +281,7 @@ def cmd_verify(
     setup_logging(verbose=verbose, no_color=no_color)
     if juce_root is None or reference is None:
         raise typer.Exit(code=2)
-    root = Path(reference).resolve()
+    root = _resolve_reference(reference)
     issues: list[str] = []
 
     # Check manifest.json
@@ -218,13 +336,15 @@ def cmd_symbol(
     """Look up a symbol by qualified name."""
     if reference is None:
         raise typer.Exit(code=2)
-    db = Path(reference) / "index" / "search.sqlite"
+    ref_root = _resolve_reference(reference)
+    db = ref_root / "index" / "search.sqlite"
     results = _search_symbol(query, db, limit=limit)
     if json_mode:
-        typer.echo(_json.dumps([{"symbol": r.symbol, "kind": r.kind, "module": r.module,
-                                  "path": r.documentation_path, "anchor": r.anchor,
-                                  "brief": r.brief, "score": r.score}
-                                 for r in results], indent=2, ensure_ascii=False))
+        output = [_enrich({"symbol": r.symbol, "kind": r.kind, "module": r.module,
+                           "documentation_path": r.documentation_path, "anchor": r.anchor,
+                           "brief": r.brief, "score": r.score}, ref_root)
+                  for r in results]
+        typer.echo(_json.dumps(output, indent=2, ensure_ascii=False))
     else:
         for r in results:
             typer.echo(f"{r.symbol}  [{r.kind}]  {r.module or ''}")
@@ -245,7 +365,7 @@ def cmd_show(
     """Show details for a specific symbol."""
     if reference is None:
         raise typer.Exit(code=2)
-    ref_root = Path(reference)
+    ref_root = _resolve_reference(reference)
     symbols_path = ref_root / "index" / "symbols.jsonl"
     match = None
     for rec in json_lines(symbols_path):
@@ -257,6 +377,7 @@ def cmd_show(
         raise typer.Exit(code=7)
 
     if json_mode:
+        _enrich(match, ref_root)
         typer.echo(_json.dumps(match, indent=2, ensure_ascii=False))
         return
 
@@ -291,17 +412,20 @@ def cmd_search(
     """Full-text search across symbols, documentation, and examples."""
     if reference is None:
         raise typer.Exit(code=2)
-    db = Path(reference) / "index" / "search.sqlite"
+    ref_root = _resolve_reference(reference)
+    db = ref_root / "index" / "search.sqlite"
     if not db.is_file():
         typer.echo("search.sqlite not found. Run 'juce-doc rebuild-index' first.", err=True)
         raise typer.Exit(code=7)
     results = _search_symbol(query, db, limit=limit, kind_filter=kind,
                               module_filter=module, public_only=public_only)
     if json_mode:
-        typer.echo(_json.dumps([{"symbol": r.symbol, "kind": r.kind, "module": r.module,
-                                  "path": r.documentation_path, "anchor": r.anchor,
-                                  "brief": r.brief, "score": r.score, "match_type": r.match_type}
-                                 for r in results], indent=2, ensure_ascii=False))
+        output = [_enrich({"symbol": r.symbol, "kind": r.kind, "module": r.module,
+                           "documentation_path": r.documentation_path, "anchor": r.anchor,
+                           "brief": r.brief, "score": r.score,
+                           "match_type": r.match_type}, ref_root)
+                  for r in results]
+        typer.echo(_json.dumps(output, indent=2, ensure_ascii=False))
     else:
         for r in results:
             typer.echo(f"{r.symbol}  [{r.kind}]  {r.module or ''}  ({r.match_type})")
@@ -322,14 +446,15 @@ def cmd_examples(
     """Find official JUCE examples using a symbol."""
     if reference is None:
         raise typer.Exit(code=2)
-    examples_path = Path(reference) / "index" / "examples.jsonl"
+    ref_root = _resolve_reference(reference)
+    examples_path = ref_root / "index" / "examples.jsonl"
     if not examples_path.is_file():
         typer.echo("examples.jsonl not found", err=True)
         raise typer.Exit(code=7)
     results = []
     for rec in json_lines(examples_path):
         if rec.get("symbol") == symbol:
-            results.append(rec)
+            results.append(_enrich(dict(rec), ref_root))
         if len(results) >= limit:
             break
     if json_mode:
@@ -353,14 +478,16 @@ def cmd_source(
     """Locate declaration and definition of a symbol."""
     if reference is None:
         raise typer.Exit(code=2)
-    sl_path = Path(reference) / "index" / "source-locations.jsonl"
+    ref_root = _resolve_reference(reference)
+    sl_path = ref_root / "index" / "source-locations.jsonl"
     if not sl_path.is_file():
         typer.echo("source-locations.jsonl not found", err=True)
         raise typer.Exit(code=7)
     for rec in json_lines(sl_path):
         if rec.get("symbol") == symbol:
             if json_mode:
-                typer.echo(_json.dumps(rec, indent=2, ensure_ascii=False))
+                typer.echo(_json.dumps(_enrich(dict(rec), ref_root),
+                                       indent=2, ensure_ascii=False))
             else:
                 typer.echo(f"symbol:     {rec['symbol']}")
                 typer.echo(f"file:       {rec.get('file', '')}")
@@ -390,14 +517,15 @@ def cmd_related(
     """Find related symbols (bases, derived, module, examples)."""
     if reference is None:
         raise typer.Exit(code=2)
-    rel_path = Path(reference) / "index" / "relationships.jsonl"
+    ref_root = _resolve_reference(reference)
+    rel_path = ref_root / "index" / "relationships.jsonl"
     if not rel_path.is_file():
         typer.echo("relationships.jsonl not found", err=True)
         raise typer.Exit(code=7)
     results = []
     for rec in json_lines(rel_path):
         if rec.get("source") == symbol or rec.get("target") == symbol:
-            results.append(rec)
+            results.append(_enrich(dict(rec), ref_root))
         if len(results) >= limit:
             break
     if json_mode:
@@ -420,7 +548,7 @@ def cmd_rebuild_index(
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
         raise typer.Exit(code=2)
-    ref_root = Path(reference)
+    ref_root = _resolve_reference(reference)
     symbols_path = ref_root / "index" / "symbols.jsonl"
     if not symbols_path.is_file():
         typer.echo("symbols.jsonl not found", err=True)
@@ -428,9 +556,14 @@ def cmd_rebuild_index(
     db_path = ref_root / "index" / "search.sqlite"
     from juce_reference.alias_loader import load_aliases
     from juce_reference.search import build_search_db
+
+    # Collect valid symbols from symbols.jsonl before loading aliases.
+    all_syms = frozenset(s["symbol"] for s in json_lines(symbols_path))
+
     aliases_path = _repo_root / "config" / "aliases.yml"
-    alias_cfg = load_aliases(aliases_path, frozenset()) if aliases_path.is_file() else None
-    count = build_search_db(symbols_path, db_path, alias_config=alias_cfg)
+    alias_cfg = load_aliases(aliases_path, all_syms) if aliases_path.is_file() else None
+    count = build_search_db(symbols_path, db_path, alias_config=alias_cfg,
+                            reference_root=ref_root)
     typer.echo(f"Rebuilt search index: {count} symbols")
 
 
@@ -447,7 +580,7 @@ def cmd_smoke(
     setup_logging(verbose=verbose, no_color=no_color)
     if reference is None:
         raise typer.Exit(code=2)
-    report = run_smoke_tests(Path(reference))
+    report = run_smoke_tests(_resolve_reference(reference))
     typer.echo(_json.dumps(report, indent=2, ensure_ascii=False))
     if not report["passed"]:
         raise typer.Exit(code=10)

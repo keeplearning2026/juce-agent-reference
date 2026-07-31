@@ -176,16 +176,21 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         aliases_path = Path(__file__).parent.parent.parent / "config" / "aliases.yml"
     alias_config = load_aliases(aliases_path, all_syms) if aliases_path.is_file() else None
     build_search_db(index_dir / "symbols.jsonl", index_dir / "search.sqlite",
-                    alias_config=alias_config)
+                    alias_config=alias_config, reference_root=candidate_dir)
 
-    # ---- 12. Write docs.lock.json ----
+    # ---- 12. Write AGENTS.md and README.md for downstream agents ----
+    _write_agents_md(candidate_dir, juce_source.commit, doc_count)
+    _write_reference_readme(candidate_dir, juce_source.commit, doc_count,
+                            symbol_count, example_count)
+
+    # ---- 13. Write docs.lock.json ----
     _write_docs_lock(candidate_dir, juce_source.commit, juce_source.dirty)
 
-    # ---- 13. Write manifest.json ----
+    # ---- 14. Write manifest.json ----
     build_manifest(compounds, doc_count, symbol_count, example_count,
                    juce_source.commit, candidate_dir / "manifest.json")
 
-    # ---- 14. Collect formatting warnings ----
+    # ---- 15. Collect formatting warnings ----
     fmt_warnings = get_warnings()
     reports_dir = candidate_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -193,10 +198,10 @@ def generate(config: GeneratorConfig) -> dict[str, Any]:
         _json.dumps(fmt_warnings, indent=2, ensure_ascii=False), encoding="utf-8")
     stats["formatting_warnings"] = len(fmt_warnings)
 
-    # ---- 15. Write generation report first (required by validator) ----
+    # ---- 16. Write generation report first (required by validator) ----
     _write_generation_report(reports_dir, stats)
 
-    # ---- 16. Validate output ----
+    # ---- 17. Validate output ----
     validation = validate_output(candidate_dir)
     stats["output_validation"] = {
         "passed": validation.passed,
@@ -270,3 +275,208 @@ def _write_docs_lock(output_dir: Path, commit: str, dirty: bool) -> None:
     }
     (output_dir / "docs.lock.json").write_text(
         _json.dumps(lock, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ---- AGENTS.md writer (for downstream coding agents) ----
+
+def _write_agents_md(
+    output_dir: Path, juce_commit: str, doc_count: int,
+) -> None:
+    """Write ``AGENTS.md`` — the protocol file that downstream coding
+    agents read to learn how to use this reference efficiently."""
+
+    content = f"""# JUCE Agent Reference — Usage Protocol
+
+## Version
+
+JUCE commit: `{juce_commit}`
+
+---
+
+## 1. Never read the whole reference
+
+There are {doc_count} Markdown files under ``reference/``.
+**Do not load them all into context.**
+
+Instead, use ``juce-doc`` CLI commands to locate the exact files you need,
+then read only those files.
+
+---
+
+## 2. The standard query workflow
+
+When given a JUCE task, follow this order:
+
+### Step 1 — Know the exact symbol name
+
+```powershell
+juce-doc show "juce::AudioProcessor" --json
+juce-doc show "juce::AudioProcessor" --print-content
+```
+
+Returns: kind, module, documentation_path, anchor, signature, brief.
+
+### Step 2 — Only know a partial name
+
+```powershell
+juce-doc symbol "Slider" --limit 10 --json
+```
+
+Returns all matching qualified symbols.
+
+### Step 3 — Know a concept but not the class name
+
+```powershell
+juce-doc search "save plugin parameter state" --limit 5 --json
+juce-doc search "DSP processor chain" --limit 10 --json
+```
+
+Search covers symbol names, briefs, full Markdown body text,
+aliases, and concept tags.
+
+Filter by kind or module:
+
+```powershell
+juce-doc search "process audio" --kind function --public-only --limit 20 --json
+```
+
+### Step 4 — Find official examples
+
+```powershell
+juce-doc examples "juce::AudioProcessorValueTreeState" --json
+```
+
+Returns example name, category, source file, line number.
+
+### Step 5 — Locate source files
+
+```powershell
+juce-doc source "juce::AudioProcessor::processBlock" --json
+```
+
+Returns declaration file/line and definition file/line.
+When the definition cannot be resolved reliably, it says
+"Definition not resolved" instead of guessing.
+
+### Step 6 — Explore relationships
+
+```powershell
+juce-doc related "juce::AudioProcessor" --json
+```
+
+Returns base-of, derived-from, member-of, contains, module-of.
+
+### Step 7 — Read only the relevant Markdown
+
+After any query, use the returned ``documentation_path``:
+
+```powershell
+Get-Content "$env:JUCE_REFERENCE\\<documentation_path>"
+```
+
+---
+
+## 3. Environment setup
+
+Set ``JUCE_REFERENCE`` to point at the release root so you can omit
+``--reference``:
+
+```powershell
+$Root = "D:\\project\\juce-reference"
+$Current = Get-Content "$Root\\current.json" | ConvertFrom-Json
+$env:JUCE_REFERENCE = Join-Path $Root $Current.path
+```
+
+Or point it at the generated candidate directory directly.
+
+---
+
+## 4. Rules
+
+1. **Do not invent JUCE APIs.** Every API claim must be verifiable
+   from this reference or the source at commit ``{juce_commit}``.
+2. **Prefer the locked local reference over model memory.**
+3. **Use ``search`` to discover symbols, then ``show`` / ``source`` /
+   ``examples`` / ``related`` to drill in.**
+4. **Read only the Markdown files returned by queries.** Do not
+   bulk-load or scan the reference tree.
+5. **If a symbol is missing from the index,** it does not exist in
+   this JUCE commit. Do not guess it exists.
+6. **Use ``--json`` for programmatic consumption.**
+"""
+    (output_dir / "AGENTS.md").write_text(content, encoding="utf-8")
+
+
+# ---- README.md writer (reference overview) ----
+
+def _write_reference_readme(
+    output_dir: Path,
+    juce_commit: str,
+    doc_count: int,
+    symbol_count: int,
+    example_count: int,
+) -> None:
+    """Write ``README.md`` — a human-readable overview of this
+    generated reference."""
+
+    content = f"""# JUCE Agent Reference
+
+Generated from JUCE commit `{juce_commit}`.
+
+## Statistics
+
+| Item | Count |
+|------|-------|
+| Documents | {doc_count} |
+| Symbols | {symbol_count} |
+| Examples | {example_count} |
+
+## Directory layout
+
+```
+reference/         ← API Markdown (types, modules, namespaces, files, pages)
+guides/            ← Imported JUCE repo docs (README, BREAKING_CHANGES, etc.)
+examples/          ← Example index by category
+  INDEX.md
+index/             ← Machine-readable indexes
+  symbols.tsv          Tab-separated symbol index
+  symbols.jsonl        Newline-delimited JSON symbol index
+  relationships.jsonl  Inheritance / containment / member-of
+  examples.jsonl       Symbol → example associations
+  source-locations.jsonl  Declaration / definition locations
+  search.sqlite        SQLite FTS5 full-text search database
+reports/            ← Generation and validation reports
+  generation.json
+  validation.json
+docs.lock.json      ← Toolchain version lock
+manifest.json       ← Generation manifest
+```
+
+## Quick start for agents
+
+See **AGENTS.md** for the usage protocol.
+
+The standard workflow:
+
+```text
+search → show → examples → source → related
+```
+
+Example:
+
+```powershell
+juce-doc search "audio processor" --limit 5 --json
+juce-doc show "juce::AudioProcessor" --json
+juce-doc examples "juce::AudioProcessor" --json
+```
+
+## Rebuilding the search index
+
+```powershell
+juce-doc rebuild-index --reference <path>
+```
+
+This rebuilds ``index/search.sqlite`` from ``index/symbols.jsonl``
+and the rendered Markdown body text.
+"""
+    (output_dir / "README.md").write_text(content, encoding="utf-8")

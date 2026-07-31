@@ -19,6 +19,8 @@ from juce_reference.util.markdown import (
 )
 
 _REQUIRED_OUTPUT_FILES = [
+    "README.md",
+    "AGENTS.md",
     "manifest.json",
     "docs.lock.json",
     "reference/",
